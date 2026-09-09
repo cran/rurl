@@ -1,29 +1,46 @@
 Package: rurl
 Type: Package
 Title: Parse, Clean, and Normalize URLs
-Version: 1.2.0
+Version: 3.0.1
 Language: en-US
 Authors@R: 
-    person("Bart", "Turczynski", email = "bartek+rurl@turczynski.pl", role = c("aut", "cre"))
+    person("Bart", "Turczynski", email = "bartek@turczynski.pl", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0002-8788-7980"))
 Description: A lightweight toolkit for extracting structured information from URLs.
     Includes functions for parsing, normalizing protocols, extracting domains, and constructing clean URLs.
-    The package includes a processed copy of the Public Suffix List from
-    <https://publicsuffix.org> for domain extraction.
+    Domain and public-suffix extraction is delegated to the 'pslr' package,
+    which implements the Public Suffix List from <https://publicsuffix.org>.
+    Punycode and IDNA encoding is handled by the 'punycoder' package.
 License: MIT + file LICENSE
 Encoding: UTF-8
-Collate: 'utils.R' 'domain.R' 'path-query.R' 'parse-phases.R' 'parse.R'
-        'accessors.R' 'canonical_join.R' 'zzz.R'
-Imports: utils, curl, stringi, punycoder (>= 1.0.0)
-URL: https://github.com/bart-turczynski/rurl
-BugReports: https://github.com/bart-turczynski/rurl/issues
-Suggests: testthat (>= 3.0.0), knitr, rmarkdown, withr
+Collate: 'rurl-package.R' 'status-constants.R' 'utils.R'
+        'percent-coding.R' 'parse-state.R' 'query-denylist.R'
+        'domain.R' 'path-query.R' 'parse-web.R' 'parse-phases.R'
+        'parse.R' 'verdicts.R' 'profiles.R' 'diagnostics.R'
+        'accessors.R' 'email-diagnostics.R' 'host-policy.R'
+        'scheme-policy.R' 'canonical_join.R' 'resolve.R' 'serialize.R'
+        'format.R' 'url-key.R' 'url-join.R' 'zzz.R'
+Imports: utils, stringi, punycoder (>= 1.2.1), pslr (>= 1.1.1)
+URL: https://bart-turczynski.gitlab.io/rurl/,
+        https://gitlab.com/bart-turczynski/rurl,
+        https://CRAN.R-project.org/package=rurl
+BugReports: https://gitlab.com/bart-turczynski/rurl/-/issues
+X-schema.org-keywords: url-parsing, url-parser, url-normalization,
+        url-cleaning, url-cleaner, url-checker, domain-extraction,
+        domain-name-detection, domain-name-checker, public-suffix, tld,
+        tlds, tld-extraction, tld-checker, tld-verification, idna,
+        punycode, uri, url, seo, web-scraping, r, rstats, r-stats,
+        r-package
+Suggests: testthat (>= 3.0.0), knitr, rmarkdown, withr, pkgdown,
+        oysteR, rosv, jsonlite
 Config/testthat/edition: 3
-Depends: R (>= 3.5)
+Depends: R (>= 4.0.0)
 VignetteBuilder: knitr
 Config/roxygen2/version: 8.0.0
 NeedsCompilation: no
-Packaged: 2026-06-13 10:02:53 UTC; bartturczynski
-Author: Bart Turczynski [aut, cre]
-Maintainer: Bart Turczynski <bartek+rurl@turczynski.pl>
+Packaged: 2026-09-08 20:57:08 UTC; bartturczynski
+Author: Bart Turczynski [aut, cre] (ORCID:
+    <https://orcid.org/0000-0002-8788-7980>)
+Maintainer: Bart Turczynski <bartek@turczynski.pl>
 Repository: CRAN
-Date/Publication: 2026-06-19 15:50:02 UTC
+Date/Publication: 2026-09-09 07:40:02 UTC

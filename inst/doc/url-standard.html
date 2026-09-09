@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+
+
+<title>Standard-conformant parsing with url_standard</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Standard-conformant parsing with
+url_standard</h1>
+
+
+
+<div id="why-a-selector" class="section level2">
+<h2>Why a selector?</h2>
+<p><code>rurl</code> exposes many low-level normalization knobs
+(<code>path_encoding</code>, <code>path_normalization</code>,
+<code>case_handling</code>, the host model, …). Assembling a coherent
+“RFC 3986-conformant” or “WHATWG-conformant” profile by hand means
+getting several of them consistent at once, and getting one wrong yields
+subtly non-conformant output.</p>
+<p>The <code>url_standard</code> selector does that assembly for you. It
+takes one of three values:</p>
+<ul>
+<li><code>NULL</code> (default) — today’s behavior, exactly. Fully
+backward compatible: byte-for-byte identical output and unchanged result
+shape.</li>
+<li><code>&quot;rfc3986&quot;</code> — the RFC 3986 profile.</li>
+<li><code>&quot;whatwg&quot;</code> — the WHATWG URL Standard profile (on the axes
+<code>rurl</code> governs).</li>
+</ul>
+<p>There is <strong>no default flip</strong>: the selector is purely
+additive, and <code>NULL</code> callers are unaffected. It is accepted
+by <code>safe_parse_url()</code>, <code>safe_parse_urls()</code>, the
+<code>get_*()</code> accessors, <code>canonical_join()</code>, and
+<code>resolve_url()</code>.</p>
+</div>
+<div id="the-canonical-cases" class="section level2">
+<h2>The canonical cases</h2>
+<div id="encoded-unreserved-bytes-4142" class="section level3">
+<h3>Encoded unreserved bytes (<code>%41%42</code>)</h3>
+<p><code>%41%42</code> is the percent-encoding of the ASCII letters
+<code>AB</code> — both <em>unreserved</em> bytes. RFC 3986 §6.2.2.2 says
+unreserved percent-encodings should be decoded to their literal form;
+WHATWG preserves them.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">get_path</span>(<span class="st">&quot;http://example.com/%41%42&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;rfc3986&quot;</span>)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/AB&quot;</span></span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="fu">get_path</span>(<span class="st">&quot;http://example.com/%41%42&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/%41%42&quot;</span></span></code></pre></div>
+</div>
+<div id="encoded-reserved-bytes-2f" class="section level3">
+<h3>Encoded reserved bytes (<code>%2F</code>)</h3>
+<p><code>%2F</code> is an encoded <code>/</code> — a <em>reserved</em>
+byte. Neither standard decodes it into a path-separating slash (that
+would change the path structure), so it stays encoded under both; only
+the hex case is canonicalized.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="fu">get_path</span>(<span class="st">&quot;http://example.com/a%2Fb&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;rfc3986&quot;</span>)</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/a%2Fb&quot;</span></span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a><span class="fu">get_path</span>(<span class="st">&quot;http://example.com/a%2fb&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;/a%2fb&quot;</span></span></code></pre></div>
+</div>
+<div id="whole-number-ipv4-2130706433" class="section level3">
+<h3>Whole-number IPv4 (<code>2130706433</code>)</h3>
+<p><code>2130706433</code> is the 32-bit integer form of
+<code>127.0.0.1</code>. WHATWG coerces it to a dotted-decimal address;
+RFC 3986 has no such rule, so it is treated as a registered name — but a
+diagnostic fires under <strong>both</strong> standards so a caller can
+tell the host was a numeric shorthand.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="fu">get_host</span>(<span class="st">&quot;http://2130706433/&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;127.0.0.1&quot;</span></span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="fu">get_host_type</span>(<span class="st">&quot;http://2130706433/&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;ipv4&quot;</span></span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="fu">get_url_diagnostics</span>(<span class="st">&quot;http://2130706433/&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;rfc3986&quot;</span>)</span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; [1] &quot;ipv4-number-form&quot; &quot;ipv4-non-dotted&quot;</span></span></code></pre></div>
+</div>
+</div>
+<div id="diagnostics-are-facts-not-policy" class="section level2">
+<h2>Diagnostics are facts, not policy</h2>
+<p><code>url_standard</code> also unlocks three companion helpers. They
+<strong>require</strong> a selector and error without one — a host type,
+a diagnostic set and a special-scheme classification are all functions
+of the profile, so there is no profile-neutral answer they could return
+(ADR 0015). Importantly, they never widen the parse result shape:
+metadata is surfaced only through these helpers, never as new columns or
+fields.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="fu">get_host_type</span>(<span class="st">&quot;http://example.com/&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;domain&quot;</span></span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="fu">get_scheme_class</span>(<span class="fu">c</span>(<span class="st">&quot;http://a/&quot;</span>, <span class="st">&quot;ftps://a/&quot;</span>), <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;special&quot;     &quot;non-special&quot;</span></span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="fu">get_url_diagnostics</span>(<span class="st">&quot;http://0x7f.1/&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt; [1] &quot;ipv4-short-form&quot;  &quot;ipv4-non-decimal&quot;</span></span></code></pre></div>
+<p>A diagnostic describes a <em>shape</em> of the input; it does not
+decide what to do about it. A link-graph builder can ignore
+<code>ipv4-*</code> tokens when computing keys, while an SSRF/allowlist
+guard can reject any host that carries one. Because they are facts, the
+same token fires under both standards.</p>
+</div>
+<div id="ports-and-backslashes" class="section level2">
+<h2>Ports and backslashes</h2>
+<p><code>port_handling</code> controls whether the port appears in
+<code>clean_url</code>. It is a standalone editorial knob (independent
+of <code>url_standard</code>), but under <code>&quot;whatwg&quot;</code> its
+<code>&quot;keep&quot;</code> value elides a port that matches its special
+scheme’s default.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">get_clean_url</span>(<span class="st">&quot;http://example.com:80/p&quot;</span>, <span class="at">port_handling =</span> <span class="st">&quot;keep&quot;</span>)</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://example.com:80/p&quot;</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="fu">get_clean_url</span>(<span class="st">&quot;http://example.com:80/p&quot;</span>, <span class="at">port_handling =</span> <span class="st">&quot;keep&quot;</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>              <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://example.com:80/p&quot;</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="fu">get_clean_url</span>(<span class="st">&quot;http://example.com:8080/p&quot;</span>, <span class="at">port_handling =</span> <span class="st">&quot;keep&quot;</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>              <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://example.com:8080/p&quot;</span></span></code></pre></div>
+<p>Under <code>&quot;whatwg&quot;</code>, a literal backslash is recognized as a
+path separator for the WHATWG-special schemes
+(<code>http</code>/<code>https</code>/<code>ftp</code>), as browsers do.
+<code>%5C</code> is never treated as a separator, and
+<code>&quot;rfc3986&quot;</code> leaves backslashes inert.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a><span class="fu">get_clean_url</span>(<span class="st">&quot;http://example.com/a</span><span class="sc">\\</span><span class="st">b&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://example.com/a/b&quot;</span></span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="fu">get_clean_url</span>(<span class="st">&quot;http://example.com/a</span><span class="sc">\\</span><span class="st">b&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;rfc3986&quot;</span>)</span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="co">#&gt; [1] NA</span></span></code></pre></div>
+</div>
+<div id="resolving-references" class="section level2">
+<h2>Resolving references</h2>
+<p><code>resolve_url()</code> turns a relative link and a base URL into
+an absolute URL, then canonicalizes the result with the same machinery,
+so <code>url_standard</code> and the other options flow straight
+through.</p>
+<p>Resolution itself is one of the axes the selector governs. Under
+<code>&quot;rfc3986&quot;</code> — and under the default <code>NULL</code> — the
+merge is RFC 3986 §5 exactly.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;../g&quot;</span>, <span class="st">&quot;http://a/b/c/d;p?q&quot;</span>)</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://a/b/g&quot;</span></span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;//other.example/p&quot;</span>, <span class="st">&quot;http://a/b/c&quot;</span>)</span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://other.example/p&quot;</span></span>
+<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="fu">c</span>(<span class="st">&quot;g&quot;</span>, <span class="st">&quot;../h&quot;</span>), <span class="st">&quot;http://a/b/c/&quot;</span>)</span>
+<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://a/b/c/g&quot; &quot;http://a/b/h&quot;</span></span></code></pre></div>
+<div id="what-whatwg-changes" class="section level3">
+<h3>What <code>&quot;whatwg&quot;</code> changes</h3>
+<p>Under <code>&quot;whatwg&quot;</code> the WHATWG URL Standard’s
+reference-<em>parsing</em> rules run before the merge. Four of them are
+visible:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a><span class="co"># 1. A reference carrying the base&#39;s OWN special scheme is relative, not</span></span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a><span class="co">#    absolute -- so this is not read as the absolute `http:g`.</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;http:g&quot;</span>, <span class="st">&quot;http://a/b/c/d&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://a/b/c/g&quot;</span></span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a></span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a><span class="co"># 2. Under a special base, `\` reads as `/`.</span></span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;..</span><span class="sc">\\</span><span class="st">g&quot;</span>, <span class="st">&quot;http://a/b/c/d&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://a/b/g&quot;</span></span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a></span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a><span class="co"># 3. A leading run of slashes-or-backslashes introduces an authority.</span></span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;///g&quot;</span>, <span class="st">&quot;http://a/b/c/d&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://g/&quot;</span></span>
+<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a></span>
+<span id="cb8-14"><a href="#cb8-14" tabindex="-1"></a><span class="co"># 4. Leading and trailing C0-or-space is stripped before the reference is read.</span></span>
+<span id="cb8-15"><a href="#cb8-15" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;  </span><span class="sc">\n</span><span class="st"> g &quot;</span>, <span class="st">&quot;http://a/b/c/d&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb8-16"><a href="#cb8-16" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://a/b/c/g&quot;</span></span></code></pre></div>
+</div>
+<div id="which-colon-starts-a-scheme" class="section level3">
+<h3>Which colon starts a scheme</h3>
+<p>One rule is not WHATWG’s — it is the RFC’s own grammar, so it applies
+under <strong>both</strong> named selectors. Deciding whether a
+reference is absolute means deciding whether the text before its first
+colon is a scheme, and RFC 3986 §3.1’s production is
+<code>ALPHA *( ALPHA / DIGIT / &quot;+&quot; / &quot;-&quot; / &quot;.&quot; )</code>. The looser
+group in the RFC’s Appendix B parser, which the appendix itself
+describes as non-validating, admits things that are not schemes — and
+§4.2 names the consequence: a relative path that merely
+<em>contains</em> a colon gets read as absolute and the base is thrown
+away.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a><span class="co"># `10.0.0.7` cannot be a scheme, so this is a relative path.</span></span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;10.0.0.7:8080/foo.html&quot;</span>, <span class="st">&quot;file:///some/dir/bar.html&quot;</span>,</span>
+<span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a>            <span class="at">url_standard =</span> <span class="st">&quot;rfc3986&quot;</span>)</span>
+<span id="cb9-4"><a href="#cb9-4" tabindex="-1"></a><span class="co">#&gt; [1] &quot;file:///some/dir/10.0.0.7:8080/foo.html&quot;</span></span>
+<span id="cb9-5"><a href="#cb9-5" tabindex="-1"></a></span>
+<span id="cb9-6"><a href="#cb9-6" tabindex="-1"></a><span class="co"># The same tightening cuts the other way for a BASE: a base whose scheme</span></span>
+<span id="cb9-7"><a href="#cb9-7" tabindex="-1"></a><span class="co"># existed only under the loose group is not an absolute URL, so there is</span></span>
+<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a><span class="co"># nothing to resolve against.</span></span>
+<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;g&quot;</span>, <span class="st">&quot;10.0.0.7:8080/dir/x&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;rfc3986&quot;</span>)</span>
+<span id="cb9-10"><a href="#cb9-10" tabindex="-1"></a><span class="co">#&gt; [1] NA</span></span></code></pre></div>
+<p><code>url_standard = NULL</code> keeps the loose group. Tightening it
+there would move frozen bytes rather than merely improve them, and the
+freeze governs whether output may <em>move</em>, not whether it is right
+— so the fix ships on the two selectors that claim a standard, and the
+one that claims none is left alone.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;g&quot;</span>, <span class="st">&quot;10.0.0.7:8080/dir/x&quot;</span>)</span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://10.0.0.7/dir/g&quot;</span></span></code></pre></div>
+</div>
+<div id="asking-for-the-standard-string-instead" class="section level3">
+<h3>Asking for the standard string instead</h3>
+<p><code>resolve_url()</code> returns <code>clean_url</code> by default,
+which drops credentials and the fragment — a cleaning product, not a
+standard serialization. When you need the surface RFC 3986 §5.4’s own
+worked examples are reproducible on, ask for it:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;../g&quot;</span>, <span class="st">&quot;http://u:pw@a/b/c/d?q#f&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://a/b/g&quot;</span></span>
+<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a><span class="fu">resolve_url</span>(<span class="st">&quot;../g&quot;</span>, <span class="st">&quot;http://u:pw@a/b/c/d?q#f&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>,</span>
+<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a>            <span class="at">output =</span> <span class="st">&quot;serialized&quot;</span>)</span>
+<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a><span class="co">#&gt; [1] &quot;http://u:pw@a/b/g&quot;</span></span></code></pre></div>
+<p><code>output = &quot;serialized&quot;</code> requires an explicit
+<code>url_standard</code>, since <code>NULL</code> selects no standard
+to serialize <em>to</em>.</p>
+</div>
+</div>
+<div id="migration-notes" class="section level2">
+<h2>Migration notes</h2>
+<ul>
+<li><strong>Pin <code>url_standard = &quot;whatwg&quot;</code></strong> for
+WHATWG-aligned link identity on the governed axes (path percent/dot
+handling, the host IPv4/reg-name model). This collapses a hand-tuned
+multi-knob profile down to one argument. It is deliberately narrower
+than “browser-faithful”: IDNA rendering and query handling are not
+governed by the selector.</li>
+<li><strong><code>path_encoding = &quot;keep&quot;</code> is a stopgap, not a
+profile.</strong> If you adopted <code>path_encoding = &quot;keep&quot;</code>
+earlier to stop <code>%2F</code> reserved-byte false joins, keep in mind
+it is a collision fix, not behavior-equivalent to <code>&quot;whatwg&quot;</code>:
+it leaves <code>%41%42</code> encoded but does not resolve encoded dot
+segments and does not change host numeric parsing. Prefer the selector
+once you can.</li>
+</ul>
+</div>
+<div id="what-the-selector-does-not-govern" class="section level2">
+<h2>What the selector does not govern</h2>
+<p>The selector governs path percent/dot handling, the host
+IPv4/reg-name model, <code>case_handling</code>, default-port elision
+(under <code>port_handling = &quot;keep&quot;</code>), and WHATWG backslash
+recognition. It does <strong>not</strong> govern IDNA rendering
+(<code>host_encoding</code>) or query handling (owned by the query
+options).</p>
+<p>It also does not decide <strong>which schemes get parsed at
+all</strong> — that is a separate axis, <code>scheme_acceptance</code>.
+The default <code>&quot;web&quot;</code> admits only the curated
+<code>http</code>/<code>https</code>/<code>ftp</code>/<code>ftps</code>/<code>file</code>
+allowlist; <code>&quot;general&quot;</code> additionally accepts non-special
+schemes, including opaque-path ones such as <code>mailto:</code>,
+<code>data:</code> and <code>tel:</code>. The two axes compose:
+<code>scheme_acceptance</code> decides what gets parsed,
+<code>url_standard</code> decides how the result is interpreted.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a><span class="co"># Rejected by the default &quot;web&quot; allowlist ...</span></span>
+<span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a><span class="fu">get_host</span>(<span class="st">&quot;mailto:jane@example.com&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>)</span>
+<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a><span class="co">#&gt; [1] NA</span></span>
+<span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="co"># ... parsed under &quot;general&quot;.</span></span>
+<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="fu">get_host</span>(<span class="st">&quot;mailto:jane@example.com&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>,</span>
+<span id="cb12-7"><a href="#cb12-7" tabindex="-1"></a>         <span class="at">scheme_acceptance =</span> <span class="st">&quot;general&quot;</span>)</span>
+<span id="cb12-8"><a href="#cb12-8" tabindex="-1"></a><span class="co">#&gt; [1] &quot;example.com&quot;</span></span></code></pre></div>
+<p>A <code>mailto:</code> URL is a WHATWG <strong>opaque path</strong>,
+which by definition has no authority, so the parse result reports none —
+the recipient stays in <code>path</code>. The accessor above is doing
+something different and deliberate: extracting the web-y facts
+<em>about</em> an address. The two answers are allowed to differ.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a><span class="fu">safe_parse_urls</span>(<span class="st">&quot;mailto:jane@example.com&quot;</span>, <span class="at">url_standard =</span> <span class="st">&quot;whatwg&quot;</span>,</span>
+<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a>                <span class="at">scheme_acceptance =</span> <span class="st">&quot;general&quot;</span>)[, <span class="fu">c</span>(<span class="st">&quot;host&quot;</span>, <span class="st">&quot;user&quot;</span>, <span class="st">&quot;path&quot;</span>)]</span>
+<span id="cb13-3"><a href="#cb13-3" tabindex="-1"></a><span class="co">#&gt;   host user             path</span></span>
+<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a><span class="co">#&gt; 1 &lt;NA&gt; &lt;NA&gt; jane@example.com</span></span></code></pre></div>
+</div>
+<div id="conformance-posture" class="section level2">
+<h2>Conformance posture</h2>
+<p><code>rurl</code>’s conformance claims are measured, frozen and
+regenerable — the studies live in <a href="https://gitlab.com/bart-turczynski/rurl/-/tree/main/analysis"><code>analysis/</code></a>,
+with the harnesses in <code>inst/bench/</code>.</p>
+<p><strong>WHATWG.</strong> Against the spec’s own conformance suite
+(web-platform-tests <code>urltestdata.json</code>), at
+<code>scheme_acceptance = &quot;general&quot;</code> the <code>&quot;whatwg&quot;</code>
+profile accepts all <strong>336</strong> success cases with full
+component parity — scheme, username, password, host, port, path, query
+and fragment — and correctly rejects all <strong>202</strong> failure
+cases: <strong>538/538</strong>. At the default
+<code>scheme_acceptance = &quot;web&quot;</code> the same corpus scores 176
+accepted, all at full parity, plus the same 202 rejections; the 160
+difference is the ADR 0004 allowlist declining non-web schemes before
+the grammar is consulted, not a conformance miss. Against
+<code>adaR</code> (the Ada C++ WHATWG reference) over a 336-input
+adversarial corpus, it differs on <strong>two rows</strong>, and neither
+is a parsing disagreement: one is punycode-vs-Unicode
+<em>presentation</em> (ADR 0002 — reachable through
+<code>host_encoding</code>), and one is the held
+<code>scheme_policy = &quot;require&quot;</code> axis. On the rows where both
+parsers accept, scheme, port and path agreement are all 1.000.</p>
+<p><strong>RFC 3986.</strong> Over the 257-row audited conformance
+fixture, the <code>&quot;rfc3986&quot;</code> profile matches the standard on
+<strong>164</strong> rows and departs on <strong>93</strong> — 81 where
+it rejects what the RFC admits (all of them the ADR 0004 host/authority
+gate; the closed scheme set contributes none) and 12 where it accepts
+what the RFC does not (ADR 0002 Unicode hosts, ADR 0011 readable paths).
+Every one of the 93 cites the ADR or ticket that owns it; none is
+accidental. A hand-authored, two-sided probe set covering the grammar
+and normalization rules passes 32/32 in both directions, with five
+deliberate departures pinned <em>outside</em> the score so strictness
+cannot inflate a conformance number.</p>
+<p>Two boundaries keep that honest rather than triumphal:</p>
+<ul>
+<li>The WPT fixture behind that 336/336 keeps only
+<strong>absolute</strong> URLs (rows with a null base), so the figure
+says <strong>nothing</strong> about base-relative resolution. It does
+now cover every scheme the suite exercises, including opaque,
+<code>ws:</code> and <code>wss:</code>. Base-relative resolution is
+measured <strong>separately</strong>, over the complementary 274
+base-carrying rows of the same upstream file: <strong>247 exact, 27
+enumerated differences</strong> (18 Windows drive letters under
+<code>file:</code>, 5 a recomposition seam, 4 absolute references whose
+deviation is in absolute parsing). <strong>The two are disjoint
+populations and are never added together</strong> — there is no combined
+rate, and the 247/274 split is a known-differ set for regression
+tracking, not a conformance rate.</li>
+<li>The <code>&quot;whatwg&quot;</code> profile is WHATWG on the axes it governs —
+<strong>not</strong> a full UTS-46 host mapping. Ligatures, circled
+digits and zero-width code points pass through unmapped (ADR 0002).</li>
+</ul>
+<p>The residual WHATWG deviations are both dials rather than defects:
+each is reachable from a documented argument, which is the design’s
+whole claim.</p>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

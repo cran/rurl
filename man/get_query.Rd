@@ -8,7 +8,17 @@ get_query(
   url,
   protocol_handling = "keep",
   format = c("string", "list"),
-  decode = TRUE
+  decode = TRUE,
+  query_handling = c("keep", "drop", "filter", "allow"),
+  params_keep = NULL,
+  params_drop = NULL,
+  params_case_sensitive = FALSE,
+  sort_params = FALSE,
+  empty_param_handling = c("keep", "drop"),
+  decode_plus = FALSE,
+  scheme_policy = c("infer", "require"),
+  scheme_acceptance = c("web", "general"),
+  url_standard = NULL
 )
 }
 \arguments{
@@ -16,22 +26,154 @@ get_query(
 
 \item{protocol_handling}{A character string specifying how to handle
 protocols. Defaults to "keep".
+Regardless of this option, rurl only processes authority-based URLs whose
+scheme is one of http, https, ftp, or ftps; a scheme-bearing input with any
+other scheme (e.g. \code{mailto:}, \code{tel:}, \code{ws:}) yields
+\code{parse_status = "error"}. Scheme inference (below) also requires the
+input to be host-shaped: a scheme-less string that is not a host (e.g.
+\code{"asdfghjkl"}, \code{"12345"}, \code{"/path"}) or is a non-canonical
+IP literal (integer/hex/octal/short forms, or leading-zero octets like
+\code{"192.168.010.1"}) is rejected as \code{"error"} rather than having a
+scheme fabricated for it.
 \itemize{
-  \item{"keep": If a scheme exists (http, https, ftp, ftps), it's used. If
-  no scheme, "http://" is added.}
-  \item{"none": If a scheme exists, it's used. If no scheme, then no
-  scheme is used (scheme component will be NA).}
-  \item{"strip": Any existing scheme is removed (scheme component will be
-  NA).}
-  \item{"http": The scheme is forced to be "http".}
-  \item{"https": The scheme is forced to be "https".}
+\item{"keep": If a supported scheme exists (http, https, ftp, ftps), it's
+used. If no scheme and the input is host-shaped, "http://" is added;
+otherwise the input is not a URL and yields \code{"error"}.}
+\item{"none": If a supported scheme exists, it's used. If no scheme, then
+no scheme is used (scheme component will be NA).}
+\item{"strip": Any existing scheme is removed (scheme component will be
+NA).}
+\item{"http": The scheme is forced to be "http".}
+\item{"https": The scheme is forced to be "https".}
 }}
 
 \item{format}{Return format: "string" (default) or "list" for parsed
 elements.}
 
-\item{decode}{Logical; if TRUE and format="list", percent-decodes
-keys/values.}
+\item{decode}{Logical; if TRUE (default), percent-decodes the query
+(the whole string for format="string", keys/values for format="list").
+Set FALSE to obtain the query as written: the raw query for the default
+\code{query_handling = "keep"}, or the canonical re-encoded form (uppercase hex,
+\verb{\%20}, \verb{\%26}/\verb{\%3D}) once any filtering is requested.}
+
+\item{query_handling}{A character string controlling whether (and how) the
+query string is included in \code{clean_url}. Defaults to "drop", which preserves
+the historical query-free \code{clean_url}. The raw \code{query} result field is never
+affected by this option — it always reports the faithful original query.
+\itemize{
+\item{"drop": (Default) \code{clean_url} carries no query, exactly as before.}
+\item{"filter": Keep contentful params, dropping known trackers via a
+built-in denylist (e.g. \verb{utm_*}, \code{fbclid}, \code{gclid}). \code{params_drop}
+extends the denylist; \code{params_keep} rescues names (winning over both the
+denylist and empty-dropping).}
+\item{"allow": Keep only params whose names match \code{params_keep}; all
+others are dropped. Here \code{params_keep} is an inclusion criterion only,
+not an empty-rescue.}
+\item{"keep": Keep every param, re-encoded into canonical form (not the
+verbatim original — that stays on the \code{query} field).}
+}
+In every non-"drop" mode the surviving query is re-encoded canonically
+(uppercase percent-hex, spaces as \verb{\%20}) and appended after the path. The
+query is intentionally EXEMPT from \code{case_handling} (query values are
+case-sensitive — tokens, IDs, signatures), so under
+\code{case_handling = "lower"} or \code{"upper"} the \code{clean_url} is no longer
+uniformly cased: scheme/host/path fold but the query keeps its original
+case. Because \code{clean_url} is the \code{\link{canonical_join}} key, any
+non-"drop" mode also brings the query into that join key (so \code{?id=1} and
+\code{?id=2} stop collapsing, while \code{utm}-only differences still collapse under
+"filter").}
+
+\item{params_keep}{Character vector of parameter-name globs (only \code{*} is
+special), or \code{NULL} (default). In "filter" mode this is the rescue list; in
+"allow" mode it is the allowlist. Ignored in "drop"/"keep".}
+
+\item{params_drop}{Character vector of parameter-name globs to add to the
+built-in denylist in "filter" mode, or \code{NULL} (default). Ignored in
+"drop"/"allow"/"keep".}
+
+\item{params_case_sensitive}{Logical (default \code{FALSE}). Controls whether the
+denylist and \code{params_keep}/\code{params_drop} matching is case-sensitive.}
+
+\item{sort_params}{Logical (default \code{FALSE}). When \code{TRUE}, surviving params
+are stably sorted by decoded key. Active in "filter"/"allow"/"keep".}
+
+\item{empty_param_handling}{One of "keep" (default) or "drop". "drop" removes
+empty-valued params (e.g. \verb{?ref=}), except those rescued by \code{params_keep}
+in "filter" mode.}
+
+\item{decode_plus}{Logical (default \code{FALSE}). When \code{TRUE}, \code{+} in query
+values is treated as a space (HTML-form decoding) before percent-decoding.
+\code{FALSE} keeps \code{+} literal (RFC 3986 generic behavior).}
+
+\item{scheme_policy}{Controls whether scheme-less, host-shaped input is
+\emph{accepted} (an input-acceptance axis, distinct from \code{protocol_handling},
+which only controls how the scheme is \emph{presented}, and from \code{url_standard},
+which controls interpretation). Defaults to "infer".
+\itemize{
+\item{"infer": (Default) Fabricate \verb{http://} for scheme-less host-shaped
+input (e.g. \code{example.com} parses as \verb{http://example.com}), a
+browser-omnibox-style affordance. This is the historical behavior.}
+\item{"require": Reject scheme-less input — a scheme-less host-shaped
+value becomes \code{parse_status = "error"} rather than gaining a fabricated
+scheme. Use this for a strict, pure-parser posture. Note this governs
+only bare host input; scheme-relative \verb{//host} input is governed
+separately by \code{scheme_relative_handling}.}
+}}
+
+\item{scheme_acceptance}{Which scheme \emph{tokens} may enter parsing (a
+scheme-acceptance axis, distinct from \code{scheme_policy}, which governs
+scheme-\emph{less} input, and from \code{url_standard}, which governs interpretation).
+Defaults to "web".
+\itemize{
+\item{"web": (Default) Only the curated web-scheme allowlist
+(\code{http}/\code{https}/\code{ftp}/\code{ftps}/\code{file}) is admitted; a scheme-bearing input
+outside it is \code{parse_status = "error"}. This is the historical,
+byte-for-byte compatible behavior.}
+\item{"general": Admit any syntactically valid scheme token and parse
+opaque (\code{mailto:x}), non-special (\verb{foo://host}), and RFC-generic URLs.
+Requires an explicit \code{url_standard} (\code{"rfc3986"} or \code{"whatwg"}), which
+decides the interpretation; \code{general} with \code{url_standard = NULL} is an
+error. Non-special / opaque hosts receive no www-stripping, no domain/TLD
+derivation, and are never run through the IDNA/punycode helpers.
+A non-special scheme with no \verb{//} is an \emph{opaque path}: it has no
+authority, so \code{host}, \code{user}, \code{port} and the \code{domain}/\code{tld} columns are
+all \code{NA} and the entire remainder is the \code{path} (\code{query}/\code{fragment} are
+still split off). This includes \verb{mailto:} — the recipient's \code{@} never
+re-triggers authority parsing. To decompose a \verb{mailto:} recipient, use
+the accessors (\code{get_host()} / \code{get_domain()} / \code{get_user()}, ADR 0012 D7)
+or \code{get_mailto_recipients()}; those deliberately return a recipient's
+parts where this table presents \code{NA}, because a recipient domain is
+extraction metadata, not the URL's authority.}
+}
+Note that \verb{file:} is admitted under \emph{both} values, including the default.
+A \verb{file:} URL denotes local-filesystem access, and one with a non-empty
+host (\verb{file://server/share/x}) is a UNC path on Windows, so dereferencing
+it reaches a remote SMB share. rurl parses \verb{file:} URLs; it never opens
+them. Restricting schemes before anything dereferences them is the
+caller's job — see \code{SECURITY.md}.}
+
+\item{url_standard}{Optional top-level standard profile: \code{NULL} (default),
+\code{"rfc3986"}, or \code{"whatwg"}. With \code{NULL} the behavior is exactly what the
+individual low-level options select (fully backward compatible). When set,
+it selects a coherent set of standard-conformant behaviors for the axes it
+governs — path percent/dot handling, the host IPv4/reg-name model, and
+\code{case_handling} — so callers do not have to hand-assemble the low-level
+knobs. Passing a governed low-level knob (\code{path_normalization} or
+\code{case_handling}) with a value the selected
+profile would not choose is an error; passing the value the profile would
+pick is accepted (only \code{case_handling = "lower_host"} is accepted under a
+selector — \code{"keep"}, \code{"lower"}, and \code{"upper"} all conflict, since \code{"lower"}
+also lowercases the path, which neither standard sanctions). Added as the
+last argument so existing positional calls keep their meaning; always
+pass it by name. Under \code{"whatwg"} the selector additionally recognizes a
+literal backslash as a path separator for WHATWG-special schemes
+(\code{http}/\code{https}/\code{ftp}) and nulls default ports in parse output; use
+\code{port_handling = "strip_default"} for spec-style clean URL port rendering.
+See \code{\link{resolve_url}} for \code{url_standard}-governed
+reference resolution. The selector does \strong{not} govern whether
+\code{port_handling} may be set (it is a standalone editorial knob), nor does it
+govern \code{path_encoding} (an orthogonal path-presentation knob that layers
+on any profile), IDNA rendering, or query handling.}
 }
 \value{
 A character vector (format="string") or list (format="list").
@@ -39,7 +181,49 @@ A character vector (format="string") or list (format="list").
 \description{
 Extracts the query component of a URL, optionally parsing it into a list.
 }
+\details{
+The underlying parse preserves the raw query string byte-for-byte (a bare
+key such as \code{?flag} stays \code{flag}, not \verb{flag=}). By default this accessor
+still percent-decodes for readability (\code{decode = TRUE}); pass
+\code{decode = FALSE} to obtain the raw query exactly as written in the URL.
+
+Under \code{url_standard = "whatwg"} the underlying query carries the standard's
+percent-encoded spelling (the query percent-encode set is applied, so a
+literal space becomes \verb{\%20}); under \code{url_standard = "rfc3986"} or no
+selector it is the raw source spelling. That distinction is only visible
+with \code{decode = FALSE}, since decoding collapses both spellings.
+
+The filtering arguments (\code{query_handling}, \code{params_keep}, \code{params_drop},
+\code{params_case_sensitive}, \code{sort_params}, \code{empty_param_handling},
+\code{decode_plus}) share the engine used by \code{\link{get_clean_url}}, but
+default to \code{query_handling = "keep"} here: an accessor returns the query as
+found unless you ask it to filter. When no filtering or reordering is
+requested (the default profile), the output is byte-for-byte identical to
+earlier releases; once you opt in, the surviving params are selected first
+and only then rendered per \code{format}/\code{decode}.
+}
+\section{Security note}{
+
+Because \code{decode = TRUE} is the \strong{default}, this accessor can return
+characters the URL itself never contained literally — including control
+characters such as CR and LF, which \verb{\%0D}/\verb{\%0A} decode to. Treat the result
+as untrusted input: do not interpolate it into a header, a log line, a
+shell command, or a SQL statement without escaping it for that sink, and do
+not assume it is single-line. Pass \code{decode = FALSE} when you want the query
+exactly as written, with no decoding step at all.
+}
+
 \examples{
 get_query("http://example.com/path?a=1&b=2")
 get_query("http://example.com/path?a=1&b=2", format = "list")
+# Drop trackers, keep contentful params:
+get_query(
+  "http://example.com/?utm_source=nl&id=42",
+  query_handling = "filter"
+)
+# Canonical (re-encoded) form:
+get_query(
+  "http://example.com/?a=1\%262",
+  query_handling = "keep", decode = FALSE
+)
 }

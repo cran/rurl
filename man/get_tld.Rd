@@ -4,12 +4,119 @@
 \alias{get_tld}
 \title{Extract the top-level domain (TLD) from a URL}
 \usage{
-get_tld(url, source = c("all", "private", "icann"))
+get_tld(
+  url,
+  source = c("all", "private", "icann"),
+  host_encoding = c("keep", "idna", "unicode"),
+  scheme_policy = c("infer", "require"),
+  scheme_acceptance = c("web", "general"),
+  url_standard = NULL,
+  engine = NULL
+)
 }
 \arguments{
 \item{url}{A character vector of URLs.}
 
 \item{source}{Which TLD source to use: "all", "icann", or "private".}
+
+\item{host_encoding}{How to present the host in \code{clean_url}. Defaults to
+"keep".
+\itemize{
+\item{"keep": Leave the host as parsed (may preserve original case).}
+\item{"idna": Convert Unicode host labels to Punycode (IDNA) for the
+cleaned URL.}
+\item{"unicode": Decode Punycode labels to Unicode for the cleaned URL.}
+}
+Under \code{url_standard = "whatwg"} every value renders the UTS-46-mapped
+host, because mapping is part of WHATWG host parsing rather than a
+feature of the \code{idna} dial (\code{BÜCHER.example} presents as
+\code{bücher.example}; RUL-002). There \code{"keep"} preserves only whether the
+input was written as an A-label (\code{xn--...}), so \code{get_host()} and
+\code{get_domain()} agree on the same row. \code{"rfc3986"} and \code{NULL} are
+unaffected.}
+
+\item{scheme_policy}{Controls whether scheme-less, host-shaped input is
+\emph{accepted} (an input-acceptance axis, distinct from \code{protocol_handling},
+which only controls how the scheme is \emph{presented}, and from \code{url_standard},
+which controls interpretation). Defaults to "infer".
+\itemize{
+\item{"infer": (Default) Fabricate \verb{http://} for scheme-less host-shaped
+input (e.g. \code{example.com} parses as \verb{http://example.com}), a
+browser-omnibox-style affordance. This is the historical behavior.}
+\item{"require": Reject scheme-less input — a scheme-less host-shaped
+value becomes \code{parse_status = "error"} rather than gaining a fabricated
+scheme. Use this for a strict, pure-parser posture. Note this governs
+only bare host input; scheme-relative \verb{//host} input is governed
+separately by \code{scheme_relative_handling}.}
+}}
+
+\item{scheme_acceptance}{Which scheme \emph{tokens} may enter parsing (a
+scheme-acceptance axis, distinct from \code{scheme_policy}, which governs
+scheme-\emph{less} input, and from \code{url_standard}, which governs interpretation).
+Defaults to "web".
+\itemize{
+\item{"web": (Default) Only the curated web-scheme allowlist
+(\code{http}/\code{https}/\code{ftp}/\code{ftps}/\code{file}) is admitted; a scheme-bearing input
+outside it is \code{parse_status = "error"}. This is the historical,
+byte-for-byte compatible behavior.}
+\item{"general": Admit any syntactically valid scheme token and parse
+opaque (\code{mailto:x}), non-special (\verb{foo://host}), and RFC-generic URLs.
+Requires an explicit \code{url_standard} (\code{"rfc3986"} or \code{"whatwg"}), which
+decides the interpretation; \code{general} with \code{url_standard = NULL} is an
+error. Non-special / opaque hosts receive no www-stripping, no domain/TLD
+derivation, and are never run through the IDNA/punycode helpers.
+A non-special scheme with no \verb{//} is an \emph{opaque path}: it has no
+authority, so \code{host}, \code{user}, \code{port} and the \code{domain}/\code{tld} columns are
+all \code{NA} and the entire remainder is the \code{path} (\code{query}/\code{fragment} are
+still split off). This includes \verb{mailto:} — the recipient's \code{@} never
+re-triggers authority parsing. To decompose a \verb{mailto:} recipient, use
+the accessors (\code{get_host()} / \code{get_domain()} / \code{get_user()}, ADR 0012 D7)
+or \code{get_mailto_recipients()}; those deliberately return a recipient's
+parts where this table presents \code{NA}, because a recipient domain is
+extraction metadata, not the URL's authority.}
+}
+Note that \verb{file:} is admitted under \emph{both} values, including the default.
+A \verb{file:} URL denotes local-filesystem access, and one with a non-empty
+host (\verb{file://server/share/x}) is a UNC path on Windows, so dereferencing
+it reaches a remote SMB share. rurl parses \verb{file:} URLs; it never opens
+them. Restricting schemes before anything dereferences them is the
+caller's job — see \code{SECURITY.md}.}
+
+\item{url_standard}{Optional top-level standard profile: \code{NULL} (default),
+\code{"rfc3986"}, or \code{"whatwg"}. With \code{NULL} the behavior is exactly what the
+individual low-level options select (fully backward compatible). When set,
+it selects a coherent set of standard-conformant behaviors for the axes it
+governs — path percent/dot handling, the host IPv4/reg-name model, and
+\code{case_handling} — so callers do not have to hand-assemble the low-level
+knobs. Passing a governed low-level knob (\code{path_normalization} or
+\code{case_handling}) with a value the selected
+profile would not choose is an error; passing the value the profile would
+pick is accepted (only \code{case_handling = "lower_host"} is accepted under a
+selector — \code{"keep"}, \code{"lower"}, and \code{"upper"} all conflict, since \code{"lower"}
+also lowercases the path, which neither standard sanctions). Added as the
+last argument so existing positional calls keep their meaning; always
+pass it by name. Under \code{"whatwg"} the selector additionally recognizes a
+literal backslash as a path separator for WHATWG-special schemes
+(\code{http}/\code{https}/\code{ftp}) and nulls default ports in parse output; use
+\code{port_handling = "strip_default"} for spec-style clean URL port rendering.
+See \code{\link{resolve_url}} for \code{url_standard}-governed
+reference resolution. The selector does \strong{not} govern whether
+\code{port_handling} may be set (it is a standalone editorial knob), nor does it
+govern \code{path_encoding} (an orthogonal path-presentation knob that layers
+on any profile), IDNA rendering, or query handling.}
+
+\item{engine}{Optional \pkg{pslr} engine controlling which Public Suffix List
+backs domain / TLD / subdomain extraction: \code{NULL} (default) resolves
+against \pkg{pslr}'s session-global default list — exactly the historical
+behavior — while a \code{pslr::psl_engine()} snapshot resolves against that
+specific list, per request, without mutating any global state (never call
+\code{pslr::psl_use()} for this). Use it to pin a particular list version or to
+load an alternate list via \code{pslr::psl_engine(source = "path", path = ...)}.
+\strong{Process-local:} an engine holds a C++ external pointer that does \strong{not}
+serialize across R sessions or parallel workers — build it in the process
+that uses it; never cache it to disk or send it to a worker (rebuild one
+per process instead). Only the domain-derived outputs (\code{domain}, \code{tld},
+and the subdomain-trimmed host / \code{clean_url}) depend on it.}
 }
 \value{
 A character vector of TLDs.

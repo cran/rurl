@@ -1,0 +1,452 @@
+# Tests for the diagnostics + host_type infrastructure (RURL-csdrxdoj, epic
+# RURL-eqzkkohm; PRD §6.2, §6.3, §7). T2 ships the plumbing and the empty
+# companion-helper surface: with no emitter wired yet the helpers return the
+# documented empty shapes, and url_standard = NULL adds no new output anywhere.
+# The host (RURL-luwvkwhd) and path (RURL-gjltzwmp / RURL-bbmuehsx) tickets add
+# the emissions and assert token presence against this same helper contract.
+
+# --- Vocabulary: the closed set, pinned --------------------------------------
+#
+# This test pins `.URL_DIAGNOSTICS` as a CLOSED SET. It is deliberately NOT a
+# docs-sync gate, and its former name ("matches the PRD §7 table verbatim")
+# claimed that it was: the referenced table in the v1 selector PRD is a
+# graduated, historical spec (ADR 0008) and had not tracked the vocabulary for
+# many releases -- it was missing `control-char-stripped`,
+# `host-charset-shimmed`, `leading-trailing-stripped` and every Layer-5 token.
+# Anyone adding a token trusted the name and went looking for a registry that
+# did not exist.
+#
+# The docs-sync half now lives where it can actually hold: the "Diagnostic
+# vocabulary (canonical)" section of get_url_diagnostics(), enforced against
+# this registry in both directions by tools/diagnostics-doc-consistency.R
+# (a CI gate, `verify` -> diagnostics-docs). Adding a token costs an edit HERE,
+# in R/diagnostics.R, and in that section (RURL-vwkjtoer).
+
+test_that("the diagnostics vocabulary is the pinned closed set", {
+  # Authoritative names; these supersede the research-doc drafts. Order is not
+  # semantically meaningful, so compare as sets.
+  expect_setequal(
+    rurl:::.URL_DIAGNOSTICS,
+    c(
+      "ipv4-number-form", "ipv4-non-dotted", "ipv4-short-form",
+      "ipv4-non-decimal", "ipv4-octal", "ipv4-leading-zero",
+      "ipv4-out-of-range", "encoded-dot-segment", "encoded-reserved-path-byte",
+      "explicit-default-port", "non-default-port", "invalid-reverse-solidus",
+      "control-char-stripped", "leading-trailing-stripped",
+      "host-charset-shimmed",
+      "domain-label-too-long", "domain-name-too-long", "domain-empty-label",
+      "domain-hyphen-violation", "domain-std3-violation",
+      # Layer 5 SELECTED diagnostics (ADR 0012 D5, RURL-izsouyxs).
+      "invalid-URL-unit", "invalid-credentials",
+      "unicode-outside-rfc3986-uri", "transform-skipped-ineligible-scheme",
+      "ws-fragment-forbidden", "ws-userinfo-forbidden",
+      "mailto-fragment-discouraged", "tel-missing-phone-context",
+      "data-missing-comma", "file-non-absolute-path",
+      "file-userinfo-extension", "file-component-outside-rfc8089"
+    )
+  )
+  # No duplicates, no stray whitespace.
+  expect_identical(anyDuplicated(rurl:::.URL_DIAGNOSTICS), 0L)
+  expect_false(any(grepl("\\s", rurl:::.URL_DIAGNOSTICS)))
+  # The superseded research-doc drafts must NOT leak into the vocabulary.
+  expect_false(any(
+    c("non-decimal-ipv4", "ambiguous-octet", "decoded-reserved") %in%
+      rurl:::.URL_DIAGNOSTICS
+  ))
+})
+
+test_that("the host_type vocabulary matches PRD §6.3", {
+  expect_setequal(
+    rurl:::.HOST_TYPES,
+    c("domain", "ipv4", "ipv6", "reg-name", "missing")
+  )
+})
+
+# --- Accumulator ------------------------------------------------------------
+
+test_that(".diag_new builds a length-n list of empty character vectors", {
+  expect_identical(rurl:::.diag_new(0L), list())
+  acc <- rurl:::.diag_new(3L)
+  expect_length(acc, 3L)
+  expect_true(all(vapply(acc, identical, logical(1), character(0))))
+})
+
+test_that(".diag_add appends a token to the masked rows only", {
+  acc <- rurl:::.diag_new(3L)
+  acc <- rurl:::.diag_add(acc, c(TRUE, FALSE, TRUE), "ipv4-octal")
+  expect_identical(acc[[1L]], "ipv4-octal")
+  expect_identical(acc[[2L]], character(0))
+  expect_identical(acc[[3L]], "ipv4-octal")
+  # A second token accumulates (a URL can carry several).
+  acc <- rurl:::.diag_add(acc, c(TRUE, FALSE, FALSE), "ipv4-leading-zero")
+  expect_identical(acc[[1L]], c("ipv4-octal", "ipv4-leading-zero"))
+  # NA mask positions are treated as FALSE, not appended.
+  acc <- rurl:::.diag_add(acc, c(NA, NA, NA), "ipv4-non-dotted")
+  expect_identical(acc[[3L]], "ipv4-octal")
+})
+
+test_that(".diag_add rejects tokens outside the vocabulary", {
+  acc <- rurl:::.diag_new(1L)
+  expect_error(
+    rurl:::.diag_add(acc, TRUE, "not-a-real-token"),
+    "diagnostic token must be one of"
+  )
+  expect_error(
+    rurl:::.diag_add(acc, TRUE, c("ipv4-octal", "ipv4-non-dotted")),
+    "diagnostic token must be one of"
+  )
+})
+
+# --- get_host_type() requires a selector (ADR 0015) --------------------------
+
+test_that("get_host_type requires url_standard", {
+  u <- c("http://example.com/", "http://2130706433/", "not-a-url")
+  # Omitted and explicitly NULL are the same error: the mode is gone, not
+  # merely undefaulted.
+  expect_error(get_host_type(u), "`url_standard` is required")
+  expect_error(
+    get_host_type(u, url_standard = NULL), "`url_standard` is required"
+  )
+})
+
+test_that("get_host_type classifies per selector (host model, RURL-luwvkwhd)", {
+  # The host model fills the T2 surface: host_type is an (host, url_standard)
+  # function. Full table coverage lives in test-url-standard-host.R; this pins
+  # the helper wiring returns one token per URL, not NA, under a selector.
+  u <- c("http://example.com/", "http://2130706433/")
+  expect_identical(
+    get_host_type(u, url_standard = "rfc3986"), c("domain", "reg-name")
+  )
+  expect_identical(
+    get_host_type(u, url_standard = "whatwg"), c("domain", "ipv4")
+  )
+})
+
+test_that("get_host_type validates input and length-0", {
+  expect_identical(
+    get_host_type(character(0), url_standard = "whatwg"), character(0)
+  )
+  expect_error(get_host_type(123), "must be a character vector")
+  # url_standard is the last (2nd positional) argument.
+  expect_error(get_host_type("http://ex.com/", "bogus"), "url_standard must be")
+})
+
+# --- get_url_diagnostics() empty surface (T2) -------------------------------
+
+test_that("get_url_diagnostics returns a bare vector for a length-1 url", {
+  res <- get_url_diagnostics("http://example.com/", url_standard = "rfc3986")
+  expect_type(res, "character")
+  expect_identical(res, character(0))
+})
+
+test_that("get_url_diagnostics returns a length-n list for a vector url", {
+  u <- c("http://example.com/", "http://2130706433/", "not-a-url")
+  res <- get_url_diagnostics(u, url_standard = "whatwg")
+  expect_type(res, "list")
+  expect_length(res, length(u))
+  # A clean host and an unparseable input carry no tokens; the numeric host
+  # does (full token tables live in test-url-standard-host.R).
+  expect_identical(res[[1L]], character(0))
+  expect_setequal(res[[2L]], c("ipv4-number-form", "ipv4-non-dotted"))
+  expect_identical(res[[3L]], character(0))
+})
+
+test_that("get_url_diagnostics handles length-0 and validates input", {
+  expect_error(get_url_diagnostics(character(0)), "`url_standard` is required")
+  expect_identical(
+    get_url_diagnostics(character(0), url_standard = "rfc3986"), list()
+  )
+  expect_error(get_url_diagnostics(list("x")), "must be a character vector")
+  expect_error(
+    get_url_diagnostics("http://ex.com/", "bogus"), "url_standard must be"
+  )
+})
+
+# --- No new output shape anywhere (AC #1 corollary) -------------------------
+
+test_that("the helpers add no columns/fields to the parse result", {
+  # Exercising the companion helpers must not perturb the parse result shape:
+  # metadata lives ONLY on the helpers, never on safe_parse_urls()/
+  # safe_parse_url() (PRD §6.3). Guards against a future emitter leaking a
+  # column back into the engine.
+  cols_before <- names(safe_parse_urls("http://ex.com/"))
+  invisible(get_host_type("http://ex.com/", url_standard = "whatwg"))
+  invisible(get_url_diagnostics("http://ex.com/", url_standard = "whatwg"))
+  cols_after <- names(safe_parse_urls("http://ex.com/"))
+  expect_identical(cols_after, cols_before)
+
+  fields <- names(safe_parse_url("http://ex.com/", url_standard = "whatwg"))
+  expect_false(any(c("host_type", "diagnostics") %in% fields))
+})
+
+# --- Layer 5 SELECTED diagnostics (ADR 0012 D5, RURL-izsouyxs) --------------
+# SELECTED facts, never a conformance oracle: absence of a token never implies
+# conformance. Two of them -- invalid-credentials and invalid-URL-unit -- are
+# WHATWG-GENERIC and gate on the interpreting standard (url_standard =
+# "whatwg"), not the acceptance axis, so they also fire on the `web` accept path
+# (RURL-sgjzbqzk). Every OTHER L5 fact stays general-only. The true DEFAULT
+# (url_standard = NULL) stays silent for ALL of them -- that is the D4
+# byte-identity / CRAN lock.
+
+gd <- function(u, standard = "whatwg") {
+  get_url_diagnostics(u, url_standard = standard, scheme_acceptance = "general")
+}
+
+# The general-only L5 facts (everything except the two WHATWG-generic ones).
+l5_general_only <- c(
+  "unicode-outside-rfc3986-uri", "transform-skipped-ineligible-scheme",
+  "ws-fragment-forbidden", "ws-userinfo-forbidden",
+  "mailto-fragment-discouraged", "tel-missing-phone-context",
+  "data-missing-comma", "file-non-absolute-path",
+  "file-userinfo-extension", "file-component-outside-rfc8089"
+)
+l5_whatwg_generic <- c("invalid-credentials", "invalid-URL-unit")
+
+test_that("the general-only L5 facts stay dormant under web acceptance", {
+  # An input that fires several under `general` fires none of the general-only
+  # facts under the default `web` acceptance, even with url_standard = "whatwg".
+  web <- get_url_diagnostics("mailto:a@b.com#f", url_standard = "whatwg")
+  expect_length(intersect(web, l5_general_only), 0L)
+  web2 <- get_url_diagnostics("http://user@ex.com/%zz", url_standard = "whatwg")
+  expect_length(intersect(web2, l5_general_only), 0L)
+})
+
+test_that("WHATWG-generic L5 facts fire under web + whatwg (RURL-sgjzbqzk)", {
+  # invalid-credentials / invalid-URL-unit gate on the interpreting standard,
+  # not acceptance -- so they fire on the pre-existing web route under
+  # url_standard = "whatwg" (no scheme_acceptance = "general" needed).
+  web2 <- get_url_diagnostics("http://user@ex.com/%zz", url_standard = "whatwg")
+  expect_true("invalid-credentials" %in% web2)
+  expect_true("invalid-URL-unit" %in% web2)
+  # A clean web+whatwg URL fires neither.
+  clean <- get_url_diagnostics("http://ex.com/clean", url_standard = "whatwg")
+  expect_length(intersect(clean, l5_whatwg_generic), 0L)
+})
+
+test_that("the true default (url_standard = NULL) stays silent for all L5", {
+  # The D4 byte-identity / CRAN lock: the DEFAULT parse combination (web
+  # acceptance + url_standard = NULL) fires NONE of the L5 facts, generic ones
+  # included. Reached through the internals because the public helper now
+  # REQUIRES a selector (ADR 0015) -- the claim is about the parse path that
+  # safe_parse_url() and friends still run at url_standard = NULL, which
+  # outlives the helper arm that used to expose it.
+  l5 <- c(l5_general_only, l5_whatwg_generic)
+  opts <- rurl:::.parse_options(url_standard = NULL)
+  meta <- rurl:::._url_metadata_vec("http://user@ex.com/%zz", opts)
+  def <- meta$diagnostics[[1L]]
+  expect_length(intersect(def, l5), 0L)
+})
+
+test_that("transform-skipped-ineligible-scheme fires on non-HTTP(S) rows", {
+  # Non-HTTP(S) schemes are ineligible for the SEO/semantic transforms (D2).
+  expect_true(
+    "transform-skipped-ineligible-scheme" %in% gd("ftp://ex.com/x")
+  )
+  expect_true(
+    "transform-skipped-ineligible-scheme" %in% gd("mailto:a@b.com")
+  )
+  # ...and never on an eligible HTTP(S) row.
+  expect_false(
+    "transform-skipped-ineligible-scheme" %in% gd("http://ex.com/clean")
+  )
+  expect_false(
+    "transform-skipped-ineligible-scheme" %in% gd("https://ex.com/clean")
+  )
+})
+
+test_that("invalid-credentials fires for ANY userinfo under whatwg general", {
+  expect_true("invalid-credentials" %in% gd("http://user@ex.com/"))
+  expect_true("invalid-credentials" %in% gd("http://u:p@ex.com/"))
+  expect_false("invalid-credentials" %in% gd("http://ex.com/"))
+  # rfc3986 posture routes raw `@` to its own generic-grammar gate; the WHATWG
+  # credentials fact does not fire there.
+  expect_false("invalid-credentials" %in% gd("http://user@ex.com/", "rfc3986"))
+})
+
+test_that("invalid-URL-unit fires on malformed %-escapes and non-URL cps", {
+  expect_true("invalid-URL-unit" %in% gd("http://ex.com/%zz"))
+  expect_true("invalid-URL-unit" %in% gd("http://ex.com/a%2Gb"))
+  expect_true("invalid-URL-unit" %in% gd("http://ex.com/a b"))
+  expect_true("invalid-URL-unit" %in% gd("http://ex.com/a<b>c"))
+  # A well-formed percent triplet and a clean path do NOT fire it.
+  expect_false("invalid-URL-unit" %in% gd("http://ex.com/a%20b"))
+  expect_false("invalid-URL-unit" %in% gd("http://ex.com/clean"))
+  # A backslash is `invalid-reverse-solidus`, not `invalid-URL-unit`.
+  expect_false("invalid-URL-unit" %in% gd("http://ex.com/a\\b"))
+})
+
+test_that("unicode-outside-rfc3986-uri fires on the sole D1 tolerance", {
+  expect_true(
+    "unicode-outside-rfc3986-uri" %in% gd("http://ex.com/ä", "rfc3986")
+  )
+  # ASCII-only rfc3986 input does not fire it; nor does a whatwg parse.
+  expect_false(
+    "unicode-outside-rfc3986-uri" %in% gd("http://ex.com/x", "rfc3986")
+  )
+  expect_false(
+    "unicode-outside-rfc3986-uri" %in% gd("http://ex.com/ä", "whatwg")
+  )
+})
+
+test_that("ws/wss fragment and userinfo are two separate facts", {
+  frag_only <- gd("ws://host/#f")
+  expect_true("ws-fragment-forbidden" %in% frag_only)
+  expect_false("ws-userinfo-forbidden" %in% frag_only)
+
+  user_only <- gd("wss://user@host/")
+  expect_true("ws-userinfo-forbidden" %in% user_only)
+  expect_false("ws-fragment-forbidden" %in% user_only)
+  # WHATWG's generic credentials fact ALSO fires for the ws userinfo.
+  expect_true("invalid-credentials" %in% user_only)
+
+  both <- gd("ws://user@host/#frag")
+  expect_true(all(
+    c("ws-fragment-forbidden", "ws-userinfo-forbidden") %in% both
+  ))
+  # A clean ws URL carries neither ws fact.
+  clean <- gd("wss://host/path")
+  expect_false(any(
+    c("ws-fragment-forbidden", "ws-userinfo-forbidden") %in% clean
+  ))
+})
+
+test_that("mailto fragment is a selected fact (RFC 6068)", {
+  expect_true(
+    "mailto-fragment-discouraged" %in% gd("mailto:a@b.com#section")
+  )
+  expect_false("mailto-fragment-discouraged" %in% gd("mailto:a@b.com"))
+})
+
+test_that("data missing comma is a selected fact (RFC 2397)", {
+  expect_true("data-missing-comma" %in% gd("data:text/plain"))
+  expect_false("data-missing-comma" %in% gd("data:text/plain,hi"))
+  expect_false("data-missing-comma" %in% gd("data:,"))
+})
+
+test_that("tel missing phone-context is a selected fact (RFC 3966)", {
+  # A local number (no leading "+") without ;phone-context= fires.
+  expect_true("tel-missing-phone-context" %in% gd("tel:555-1234"))
+  # A global number (leading "+") is exempt.
+  expect_false("tel-missing-phone-context" %in% gd("tel:+1-800-555-1234"))
+  # A local number WITH ;phone-context= is exempt.
+  expect_false(
+    "tel-missing-phone-context" %in%
+      gd("tel:555-1234;phone-context=+1-555")
+  )
+})
+
+test_that("file rfc-syntax shape facts fire (RFC 8089)", {
+  # Non-absolute (rootless) path.
+  expect_true(
+    "file-non-absolute-path" %in% gd("file:relative/path", "rfc3986")
+  )
+  expect_false(
+    "file-non-absolute-path" %in% gd("file:/etc/hosts", "rfc3986")
+  )
+  # Query/fragment: RFC 8089 never mentions either, so they are inherited
+  # generic RFC 3986 components -- reported as a fact, NOT rejected. For the
+  # fragment, RFC 3986 S3.5 forbids scheme specs from restricting it at all
+  # (RFC 8118 S3 depends on this: file:///doc.pdf#page=2).
+  expect_true(
+    "file-component-outside-rfc8089" %in% gd("file:/p?q=1", "rfc3986")
+  )
+  expect_true(
+    "file-component-outside-rfc8089" %in% gd("file:/p#frag", "rfc3986")
+  )
+  expect_false(
+    "file-component-outside-rfc8089" %in% gd("file:/ok/path", "rfc3986")
+  )
+  # userinfo IS admitted, by App. E.1/F's non-normative production, and is
+  # surfaced as a fact rather than discarded.
+  expect_true(
+    "file-userinfo-extension" %in% gd("file://u@h/p", "rfc3986")
+  )
+  expect_false(
+    "file-userinfo-extension" %in% gd("file://h/p", "rfc3986")
+  )
+  # A port used to be a parse FAILURE under Gate 2. RURL-uhkofhjf made it the
+  # FACT that ADR 0012 D5 already listed it as, alongside the userinfo above:
+  # RFC 8089's silence about a port is a scheme-specific narrowing, and under
+  # the scheme-agnostic rfc3986 selector an overlay may not gate the parse. So
+  # the row is `ok` and the fact is reported, grouped with query/fragment.
+  expect_identical(
+    safe_parse_urls(
+      "file://h:8080/p",
+      url_standard = "rfc3986", scheme_acceptance = "general"
+    )$parse_status,
+    "ok"
+  )
+  expect_true(
+    "file-component-outside-rfc8089" %in% gd("file://h:8080/p", "rfc3986")
+  )
+  # The NULL default is byte-frozen (ADR 0012 D4) and still rejects.
+  expect_identical(
+    suppressWarnings(get_parse_status("file://h:8080/p")), "error"
+  )
+})
+
+# The return contract of the three selector-gated helpers, pinned because the
+# roxygen @return sections make claims about it that nothing else would catch
+# drifting (RURL-hikovisr, then RURL-kbpyivuk / ADR 0015).
+#
+# Before ADR 0015 these pinned an AMBIGUITY: NA and character(0) each meant
+# both "no selector" and a real finding, and the docs warned about the overload
+# at length. Making url_standard required removed the first meaning from every
+# one of them, so what is pinned now is the absence of that overload -- which
+# is the whole point of the change and would be silently lost if a default ever
+# crept back.
+test_that("all three helpers reject a missing selector identically", {
+  u <- c("http://example.com/", "http://2130706433/", "not a url")
+  for (fn in list(get_host_type, get_url_diagnostics, get_scheme_class)) {
+    expect_error(fn(u), "`url_standard` is required")
+    expect_error(fn(u, url_standard = NULL), "`url_standard` is required")
+  }
+  # The message names both profiles, so the fix is in the error itself.
+  expect_error(get_host_type(u), "whatwg")
+  expect_error(get_host_type(u), "rfc3986")
+})
+
+test_that("get_host_type(): NA now means unclassifiable, and nothing else", {
+  # The overload the docs used to warn about: the left side is unclassifiable
+  # input under a selector, the right side USED to be the same all-NA answer
+  # for well-formed input with no selector. The right side no longer exists.
+  expect_true(all(is.na(
+    get_host_type(c("/relative/path", ""), url_standard = "rfc3986")
+  )))
+  expect_false(anyNA(
+    get_host_type(
+      c("http://example.com/", "http://2130706433/", "http://[::1]/"),
+      url_standard = "whatwg"
+    )
+  ))
+})
+
+test_that("get_scheme_class(): never NA, under either profile", {
+  # With a selector nothing falls through to NA, and there is no longer a
+  # selector-less arm that could produce one -- so NA is unreachable.
+  awkward <- c(
+    "http://example.com/", "/relative", "://bad", "", NA_character_,
+    "http://x|y/", "mailto:a@b.c", "not a url", "http://[::1]/", "ftp://h/"
+  )
+  for (std in c("rfc3986", "whatwg")) {
+    got <- get_scheme_class(awkward, url_standard = std)
+    expect_false(anyNA(got), info = std)
+    expect_true(
+      all(got %in% c("special", "non-special", "missing-or-error")),
+      info = std
+    )
+  }
+})
+
+test_that("get_url_diagnostics(): empty IS a clean verdict now", {
+  dirty <- "http://2130706433/"
+  clean <- "http://example.com/"
+  # Under a selector this URL raises tokens and the clean one does not ...
+  expect_gt(length(get_url_diagnostics(dirty, url_standard = "whatwg")), 0L)
+  expect_identical(
+    get_url_diagnostics(clean, url_standard = "whatwg"), character(0)
+  )
+  # ... and there is no selector-less call that could make the dirty URL look
+  # like the clean one.
+  expect_error(get_url_diagnostics(dirty), "`url_standard` is required")
+})

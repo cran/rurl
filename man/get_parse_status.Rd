@@ -8,7 +8,11 @@ get_parse_status(
   url,
   protocol_handling = "keep",
   www_handling = "none",
-  subdomain_levels_to_keep = NULL
+  subdomain_levels_to_keep = NULL,
+  source = c("all", "private", "icann"),
+  scheme_policy = c("infer", "require"),
+  scheme_acceptance = c("web", "general"),
+  url_standard = NULL
 )
 }
 \arguments{
@@ -16,62 +20,162 @@ get_parse_status(
 
 \item{protocol_handling}{A character string specifying how to handle
 protocols. Defaults to "keep".
+Regardless of this option, rurl only processes authority-based URLs whose
+scheme is one of http, https, ftp, or ftps; a scheme-bearing input with any
+other scheme (e.g. \code{mailto:}, \code{tel:}, \code{ws:}) yields
+\code{parse_status = "error"}. Scheme inference (below) also requires the
+input to be host-shaped: a scheme-less string that is not a host (e.g.
+\code{"asdfghjkl"}, \code{"12345"}, \code{"/path"}) or is a non-canonical
+IP literal (integer/hex/octal/short forms, or leading-zero octets like
+\code{"192.168.010.1"}) is rejected as \code{"error"} rather than having a
+scheme fabricated for it.
 \itemize{
-  \item{"keep": If a scheme exists (http, https, ftp, ftps), it's used. If
-  no scheme, "http://" is added.}
-  \item{"none": If a scheme exists, it's used. If no scheme, then no
-  scheme is used (scheme component will be NA).}
-  \item{"strip": Any existing scheme is removed (scheme component will be
-  NA).}
-  \item{"http": The scheme is forced to be "http".}
-  \item{"https": The scheme is forced to be "https".}
+\item{"keep": If a supported scheme exists (http, https, ftp, ftps), it's
+used. If no scheme and the input is host-shaped, "http://" is added;
+otherwise the input is not a URL and yields \code{"error"}.}
+\item{"none": If a supported scheme exists, it's used. If no scheme, then
+no scheme is used (scheme component will be NA).}
+\item{"strip": Any existing scheme is removed (scheme component will be
+NA).}
+\item{"http": The scheme is forced to be "http".}
+\item{"https": The scheme is forced to be "https".}
 }}
 
 \item{www_handling}{A character string specifying how to handle "www"
-and "www[number]" prefixes in the host. Defaults to "none".
+and \code{www[number]} prefixes in the host. Defaults to "none".
 \itemize{
-  \item{"none": (Default) Leaves the host's www prefix (or lack thereof)
-  untouched.}
-  \item{"strip": Removes any "www." or "www[number]." prefix.}
-  \item{"keep": Ensures the host starts with "www.". If it has
-  "www[number].", it's normalized to "www.". If no www prefix, "www." is
-  added. An empty input host remains empty.}
-  \item{"if_no_subdomain": If the host is a bare registered domain (e.g.,
-  "example.com"), "www." is added. If the host already has a "www." or
-  "www[number]." prefix, it is normalized to "www." (e.g.,
-  "www1.example.com" becomes "www.example.com"; "www1.sub.example.com"
-  becomes "www.sub.example.com"). If a non-www subdomain exists (e.g.,
-  "sub.example.com" or the normalized "www.sub.example.com"), the host is
-  not further altered. An empty input host remains empty.}
+\item{"none": (Default) Leaves the host's www prefix (or lack thereof)
+untouched.}
+\item{"strip": Removes any "www." or \verb{www[number].} prefix.}
+\item{"keep": Ensures the host starts with "www.". If it has
+\verb{www[number].}, it's normalized to "www.". If no www prefix, "www." is
+added. An empty input host remains empty.}
+\item{"if_no_subdomain": If the host is a bare registered domain (e.g.,
+"example.com"), "www." is added. If the host already has a "www." or
+\verb{www[number].} prefix, it is normalized to "www." (e.g.,
+"www1.example.com" becomes "www.example.com"; "www1.sub.example.com"
+becomes "www.sub.example.com"). If a non-www subdomain exists (e.g.,
+"sub.example.com" or the normalized "www.sub.example.com"), the host is
+not further altered. An empty input host remains empty.}
 }}
 
 \item{subdomain_levels_to_keep}{An integer or NULL. Determines how many
 levels of subdomains are kept,
-  in addition to any 'www.' prefix handled by `www_handling`.
-  \itemize{
-    \item{`NULL`: (Default) No specific subdomain stripping is performed
-    beyond `www_handling`.}
-    \item{`0`: All subdomains are stripped. If `www_handling` preserved or
-    added 'www.',
-         it remains (e.g., 'www.sub.example.com' becomes 'www.example.com';
-         'sub.example.com' becomes 'example.com').}
-    \item{`N > 0`: Keeps up to N levels of subdomains, counted from
-    right-to-left (closest to the registered domain),
-         in addition to any 'www.' prefix. E.g., if N=1,
-         'three.two.one.example.com' becomes 'one.example.com';
-         'www.three.two.one.example.com' (post www_handling) becomes
-         'www.one.example.com'.}
-  }}
+in addition to any 'www.' prefix handled by \code{www_handling}.
+\itemize{
+\item{\code{NULL}: (Default) No specific subdomain stripping is performed
+beyond \code{www_handling}.}
+\item{\code{0}: All subdomains are stripped. If \code{www_handling} preserved or
+added 'www.',
+it remains (e.g., 'www.sub.example.com' becomes 'www.example.com';
+'sub.example.com' becomes 'example.com').}
+\item{\code{N > 0}: Keeps up to N levels of subdomains, counted from
+right-to-left (closest to the registered domain),
+in addition to any 'www.' prefix. E.g., if N=1,
+'three.two.one.example.com' becomes 'one.example.com';
+'www.three.two.one.example.com' (post www_handling) becomes
+'www.one.example.com'.}
+}}
+
+\item{source}{Which PSL source to use: "all", "private", or "icann".
+Warning statuses such as \code{warning-no-tld}, \code{warning-invalid-tld},
+and \code{warning-public-suffix} depend on which PSL section is consulted,
+so pass \code{source = "icann"} to use only ICANN-managed TLDs.}
+
+\item{scheme_policy}{Controls whether scheme-less, host-shaped input is
+\emph{accepted} (an input-acceptance axis, distinct from \code{protocol_handling},
+which only controls how the scheme is \emph{presented}, and from \code{url_standard},
+which controls interpretation). Defaults to "infer".
+\itemize{
+\item{"infer": (Default) Fabricate \verb{http://} for scheme-less host-shaped
+input (e.g. \code{example.com} parses as \verb{http://example.com}), a
+browser-omnibox-style affordance. This is the historical behavior.}
+\item{"require": Reject scheme-less input — a scheme-less host-shaped
+value becomes \code{parse_status = "error"} rather than gaining a fabricated
+scheme. Use this for a strict, pure-parser posture. Note this governs
+only bare host input; scheme-relative \verb{//host} input is governed
+separately by \code{scheme_relative_handling}.}
+}}
+
+\item{scheme_acceptance}{Which scheme \emph{tokens} may enter parsing (a
+scheme-acceptance axis, distinct from \code{scheme_policy}, which governs
+scheme-\emph{less} input, and from \code{url_standard}, which governs interpretation).
+Defaults to "web".
+\itemize{
+\item{"web": (Default) Only the curated web-scheme allowlist
+(\code{http}/\code{https}/\code{ftp}/\code{ftps}/\code{file}) is admitted; a scheme-bearing input
+outside it is \code{parse_status = "error"}. This is the historical,
+byte-for-byte compatible behavior.}
+\item{"general": Admit any syntactically valid scheme token and parse
+opaque (\code{mailto:x}), non-special (\verb{foo://host}), and RFC-generic URLs.
+Requires an explicit \code{url_standard} (\code{"rfc3986"} or \code{"whatwg"}), which
+decides the interpretation; \code{general} with \code{url_standard = NULL} is an
+error. Non-special / opaque hosts receive no www-stripping, no domain/TLD
+derivation, and are never run through the IDNA/punycode helpers.
+A non-special scheme with no \verb{//} is an \emph{opaque path}: it has no
+authority, so \code{host}, \code{user}, \code{port} and the \code{domain}/\code{tld} columns are
+all \code{NA} and the entire remainder is the \code{path} (\code{query}/\code{fragment} are
+still split off). This includes \verb{mailto:} — the recipient's \code{@} never
+re-triggers authority parsing. To decompose a \verb{mailto:} recipient, use
+the accessors (\code{get_host()} / \code{get_domain()} / \code{get_user()}, ADR 0012 D7)
+or \code{get_mailto_recipients()}; those deliberately return a recipient's
+parts where this table presents \code{NA}, because a recipient domain is
+extraction metadata, not the URL's authority.}
+}
+Note that \verb{file:} is admitted under \emph{both} values, including the default.
+A \verb{file:} URL denotes local-filesystem access, and one with a non-empty
+host (\verb{file://server/share/x}) is a UNC path on Windows, so dereferencing
+it reaches a remote SMB share. rurl parses \verb{file:} URLs; it never opens
+them. Restricting schemes before anything dereferences them is the
+caller's job — see \code{SECURITY.md}.}
+
+\item{url_standard}{Optional top-level standard profile: \code{NULL} (default),
+\code{"rfc3986"}, or \code{"whatwg"}. With \code{NULL} the behavior is exactly what the
+individual low-level options select (fully backward compatible). When set,
+it selects a coherent set of standard-conformant behaviors for the axes it
+governs — path percent/dot handling, the host IPv4/reg-name model, and
+\code{case_handling} — so callers do not have to hand-assemble the low-level
+knobs. Passing a governed low-level knob (\code{path_normalization} or
+\code{case_handling}) with a value the selected
+profile would not choose is an error; passing the value the profile would
+pick is accepted (only \code{case_handling = "lower_host"} is accepted under a
+selector — \code{"keep"}, \code{"lower"}, and \code{"upper"} all conflict, since \code{"lower"}
+also lowercases the path, which neither standard sanctions). Added as the
+last argument so existing positional calls keep their meaning; always
+pass it by name. Under \code{"whatwg"} the selector additionally recognizes a
+literal backslash as a path separator for WHATWG-special schemes
+(\code{http}/\code{https}/\code{ftp}) and nulls default ports in parse output; use
+\code{port_handling = "strip_default"} for spec-style clean URL port rendering.
+See \code{\link{resolve_url}} for \code{url_standard}-governed
+reference resolution. The selector does \strong{not} govern whether
+\code{port_handling} may be set (it is a standalone editorial knob), nor does it
+govern \code{path_encoding} (an orthogonal path-presentation knob that layers
+on any profile), IDNA rendering, or query handling.}
 }
 \value{
-A character vector with the parse status of each URL.
+A character vector with the parse status of each URL: one of
+\code{"ok"}, \code{"ok-ftp"}, \code{"ok-scheme-relative"},
+\code{"warning-no-tld"}, \code{"warning-invalid-tld"},
+\code{"warning-public-suffix"}, \code{"warning-userinfo"} (a scheme-less
+input carrying userinfo, e.g. \code{"user@example.com"}), or
+\code{"error"}. See \code{\link{safe_parse_url}} for the full semantics.
 }
 \description{
-Get the parse status of URLs
+The status is a single value collapsed from three independent facts --- URL
+syntax, admission policy, and the Public Suffix List annotation --- so it is
+a \emph{lossy} view of them. The guaranteed loss: a structural syntax
+failure and a policy rejection both report \code{"error"}. Call
+\code{\link{get_parse_verdicts}} when you need to tell those apart, or to
+read the PSL result as a typed annotation state rather than as a warning.
+Nothing here is deprecated --- the layered accessor is purely additive.
 }
 \examples{
 get_parse_status(
   c("http://example.com", "ftp://example.com", "mailto:user@example.com")
 )
 get_parse_status(c("http://example.com", "not-a-url"))
+get_parse_status("http://example.com", source = "icann")
+}
+\seealso{
+\code{\link{get_parse_verdicts}} for the unprojected layers
 }

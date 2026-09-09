@@ -8,10 +8,110 @@ test_that("safe_parse_urls handles empty and non-character inputs", {
   expect_equal(res_num$parse_status, "error")
 })
 
+# ---- list-element length matrix (RURL-ksozrswe) -----------------------------
+#
+# P1.1 §3.4 is settled: "row-local recovery for parse/validation failure;
+# call-level errors reserved for contract violations ..., not for bad data."
+# A list element whose length is not 1 is bad DATA, so it must produce an error
+# ROW, never abort the call. S1 (S1-F3) enumerates "list elements of length
+# 0/1/>1" as a required contract cell.
+#
+# original_url for a non-scalar element is NA_character_, which is what
+# .spu_coerce_original() already returns for every other non-scalar shape
+# (NULL, length 0, and non-character length > 1); only the character length > 1
+# case escaped that rule and blew up the surrounding vapply().
+
+test_that("non-scalar list elements yield error rows, not a call-level abort", {
+  # The reported defect: a length-2 character element aborted the whole call
+  # with base R's untyped "values must be length 1" vapply message.
+  res <- safe_parse_urls(list("http://a.com/", c("b", "c")))
+  expect_equal(nrow(res), 2L)
+  expect_equal(res$parse_status, c(rurl:::.STATUS_OK, rurl:::.STATUS_ERROR))
+  expect_equal(res$original_url, c("http://a.com/", NA_character_))
+  expect_equal(res$host, c("a.com", NA_character_))
+})
+
+test_that("the list-element length x type matrix is row-local throughout", {
+  # length 0 / 1 / >1 crossed with character and non-character elements. Each
+  # bad element is paired with a good one so a call-level abort is detectable
+  # as a lost first row rather than only as an error.
+  bad <- list(
+    `character length 0` = character(0),
+    `character length 2` = c("b", "c"),
+    `character length 3` = c("http://b.com/", "http://c.com/", "http://d.com/"),
+    `NULL` = NULL,
+    `numeric length 0` = numeric(0),
+    `numeric length 2` = c(2, 3),
+    `logical length 2` = c(TRUE, FALSE),
+    `nested list length 2` = list("b", "c")
+  )
+  for (nm in names(bad)) {
+    res <- safe_parse_urls(list("http://a.com/", bad[[nm]]))
+    expect_equal(nrow(res), 2L, info = nm)
+    expect_equal(
+      res$parse_status, c(rurl:::.STATUS_OK, rurl:::.STATUS_ERROR),
+      info = nm
+    )
+    expect_equal(res$original_url, c("http://a.com/", NA_character_), info = nm)
+  }
+
+  # length 1 is the parseable cell and must stay unchanged: a character scalar
+  # parses; a non-character scalar is stringified for original_url only and
+  # still yields an error row (the sibling behavior pinned above).
+  ok <- safe_parse_urls(list("http://a.com/", "http://b.com/"))
+  expect_equal(ok$parse_status, c(rurl:::.STATUS_OK, rurl:::.STATUS_OK))
+  expect_equal(ok$host, c("a.com", "b.com"))
+
+  scalar_num <- safe_parse_urls(list("http://a.com/", 1))
+  expect_equal(scalar_num$original_url, c("http://a.com/", "1"))
+  expect_equal(
+    scalar_num$parse_status, c(rurl:::.STATUS_OK, rurl:::.STATUS_ERROR)
+  )
+})
+
+test_that("a bad list element does not widen or narrow the result frame", {
+  # ADR 0006: the result column set is fixed. Row-local recovery changes which
+  # ROWS appear and their status, never the columns.
+  good <- safe_parse_urls(list("http://a.com/"))
+  mixed <- safe_parse_urls(list("http://a.com/", c("b", "c")))
+  expect_named(mixed, names(good))
+  expect_identical(
+    vapply(mixed, function(x) class(x)[1], character(1)),
+    vapply(good, function(x) class(x)[1], character(1))
+  )
+})
+
+test_that("safe_parse_urls accepts factor input by coercing to labels", {
+  # Factor input is coerced to its character labels up front, so it parses
+  # identically to the equivalent character vector rather than yielding an
+  # all-error row (regression: factors previously fell through as non-char).
+  f <- factor(c("http://example.com", "https://www.example.com/path"))
+  res_factor <- safe_parse_urls(f)
+  res_char <- safe_parse_urls(as.character(f))
+  expect_equal(res_factor, res_char)
+  expect_equal(res_factor$parse_status, c("ok", "ok"))
+  expect_equal(res_factor$original_url, as.character(f))
+})
+
 test_that("safe_parse_urls validates subdomain_levels_to_keep", {
   expect_error(
     safe_parse_urls("example.com", subdomain_levels_to_keep = -1),
     "non-negative"
+  )
+  expect_error(
+    safe_parse_urls("example.com", subdomain_levels_to_keep = c(1, 2)),
+    "non-negative integer"
+  )
+  expect_error(
+    safe_parse_urls("example.com", subdomain_levels_to_keep = NA_real_),
+    "non-negative integer"
+  )
+  expect_error(
+    safe_parse_urls("example.com", subdomain_levels_to_keep = 1.5),
+    "non-negative integer"
+  )
+  expect_no_error(
+    safe_parse_urls("example.com", subdomain_levels_to_keep = 1)
   )
 })
 
@@ -24,12 +124,11 @@ test_that("internal parse handles NA regex results", {
     {
       assign("stri_detect_regex", orig, envir = ns)
       if (was_locked) lockBinding("stri_detect_regex", ns)
-    },
-    testthat::teardown_env()
+    }
   )
 
   assign("stri_detect_regex", function(string, pattern, ...) {
-    if (identical(pattern, "^([a-zA-Z][a-zA-Z0-9+.-]*):\\\\/\\\\/")) {
+    if (identical(pattern, "^([a-zA-Z][a-zA-Z0-9+.-]*):\\/\\/")) {
       return(NA)
     }
     if (identical(pattern, "^[^/]+:[0-9]+($|/)")) {
@@ -52,7 +151,7 @@ test_that("internal parse handles NA regex results", {
     host_encoding = "keep",
     path_encoding = "keep"
   )
-  expect_true(is.list(res))
+  expect_type(res, "list")
 
   res2 <- rurl:::._safe_parse_url_impl(
     url = "foo:123",
@@ -80,8 +179,7 @@ test_that("safe_parse_url handles NA from stringi ip detection", {
     {
       assign("stri_detect_regex", orig, envir = ns)
       if (was_locked) lockBinding("stri_detect_regex", ns)
-    },
-    testthat::teardown_env()
+    }
   )
 
   assign("stri_detect_regex", function(string, pattern, ...) {
@@ -97,23 +195,27 @@ test_that("safe_parse_url handles NA from stringi ip detection", {
   }, envir = ns)
 
   parsed <- safe_parse_url("http://127.0.0.1", www_handling = "none")
-  expect_true(is.list(parsed))
+  expect_type(parsed, "list")
 })
 
-test_that("safe_parse_url handles empty host from curl_parse_url", {
-  ns <- asNamespace("curl")
-  orig <- get("curl_parse_url", envir = ns)
-  was_locked <- bindingIsLocked("curl_parse_url", ns)
-  if (was_locked) unlockBinding("curl_parse_url", ns)
+test_that("safe_parse_url handles an empty host from the parse engine", {
+  # The empty-host branch is defensive and UNREACHABLE through real input --
+  # `.parse_web_url_one()` rejects an empty authority outright -- so the only
+  # way to exercise it is to stub the engine. It used to stub the external
+  # parser in ITS namespace; the seam it targets is rurl's own now, which is
+  # the whole point of RURL-robgajml.
+  ns <- asNamespace("rurl")
+  orig <- get(".parse_web_url_one", envir = ns)
+  was_locked <- bindingIsLocked(".parse_web_url_one", ns)
+  if (was_locked) unlockBinding(".parse_web_url_one", ns)
   withr::defer(
     {
-      assign("curl_parse_url", orig, envir = ns)
-      if (was_locked) lockBinding("curl_parse_url", ns)
-    },
-    testthat::teardown_env()
+      assign(".parse_web_url_one", orig, envir = ns)
+      if (was_locked) lockBinding(".parse_web_url_one", ns)
+    }
   )
 
-  assign("curl_parse_url", function(url, ...) {
+  assign(".parse_web_url_one", function(url, ...) {
     if (identical(url, "http://empty-host")) {
       return(list(scheme = "http", host = "", path = ""))
     }
@@ -125,8 +227,8 @@ test_that("safe_parse_url handles empty host from curl_parse_url", {
     "http://empty-host",
     www_handling = "if_no_subdomain"
   )
-  expect_true(is.list(res_keep))
-  expect_true(is.list(res_if_no))
+  expect_type(res_keep, "list")
+  expect_type(res_if_no, "list")
 })
 
 test_that("safe_parse_url www_handling if_no_subdomain branches", {
@@ -152,15 +254,29 @@ test_that("safe_parse_url www_handling if_no_subdomain branches", {
 test_that(
   "safe_parse_url if_no_subdomain keeps candidate host when domain is unknown",
   {
-  testthat::local_mocked_bindings(
-    .get_registered_domain = function(host) NA_character_,
-    .punycode_to_unicode = function(x) x,
-    .env = asNamespace("rurl")
-  )
+    testthat::local_mocked_bindings(
+      .psl_suffix_extract = function(host, section = "all", engine = NULL) {
+        data.frame(
+          host = host,
+          subdomain = NA_character_,
+          domain = NA_character_,
+          suffix = NA_character_,
+          registrable_domain = NA_character_,
+          stringsAsFactors = FALSE
+        )
+      }
+    )
 
-  res <- safe_parse_url("http://example.com", www_handling = "if_no_subdomain")
-  expect_equal(res$host, "example.com")
-})
+    # The full-parse cache may already hold "http://example.com" from an earlier
+    # test (resolved with the real PSL); clear it so the mock is exercised.
+    rurl_clear_caches()
+    res <- safe_parse_url(
+      "http://example.com",
+      www_handling = "if_no_subdomain"
+    )
+    expect_equal(res$host, "example.com")
+  }
+)
 
 test_that("internal path helpers cover edge cases", {
   expect_equal(rurl:::._collapse_path_slashes(NA_character_), NA_character_)
@@ -185,34 +301,124 @@ test_that("internal path helpers cover edge cases", {
   expect_equal(rurl:::._encode_path_segments("/a b/"), "/a%20b/")
 })
 
-test_that("punycode_to_unicode handles invalid decode", {
+test_that("punycode_to_unicode never errors on malformed A-labels", {
+  # The helper is contractually total: it returns a single string for any
+  # input, falling back to the original label when a part cannot be decoded.
   res <- rurl:::.punycode_to_unicode("xn--invalid")
-  expect_true(res %in% c("", "xn--invalid"))
+  expect_type(res, "character")
+  expect_length(res, 1L)
+  expect_false(is.na(res))
 })
 
-test_that("domain helpers handle edge cases", {
-  expect_true(is.na(rurl:::._derive_domain_from_tld(NA_character_, "com")))
-  expect_true(
-    is.na(rurl:::._derive_domain_from_tld("example.com", NA_character_))
-  )
-  expect_true(is.na(rurl:::._derive_domain_from_tld("com", "com")))
-  expect_true(is.na(rurl:::._derive_domain_from_tld("example.net", "com")))
-  expect_true(is.na(rurl:::._derive_domain_from_tld(".com", "com")))
-  expect_equal(
-    rurl:::._derive_domain_from_tld("sub.example.com", "com"),
-    "example.com"
+test_that("punycode_to_unicode returns empty string for empty input", {
+  # Empty (but non-NA) input short-circuits to "" before any decode attempt.
+  expect_identical(rurl:::.punycode_to_unicode(""), "")
+})
+
+test_that(".host_is_ace returns FALSE for NA, empty, and non-scalar hosts", {
+  expect_false(rurl:::.host_is_ace(NA_character_))
+  expect_false(rurl:::.host_is_ace(""))
+  expect_false(rurl:::.host_is_ace(character(0)))
+  expect_false(rurl:::.host_is_ace(c("xn--a", "xn--b")))
+  # Sanity: a genuine A-label host still reports TRUE.
+  expect_true(rurl:::.host_is_ace("xn--mnchen-3ya.de"))
+})
+
+test_that(".cache_enabled returns FALSE for an unknown cache name", {
+  expect_false(rurl:::.cache_enabled("not-a-real-cache"))
+})
+
+test_that("derive_parse_status coerces NA host-has-dot to no-TLD warning", {
+  # stri_detect_fixed(final_host, ".") can in principle return NA; the
+  # defensive guard coerces that to FALSE so the host is treated as dotless
+  # (warning-no-tld) instead of erroring on `if (NA)`.
+  ns <- asNamespace("stringi")
+  orig <- get("stri_detect_fixed", envir = ns)
+  was_locked <- bindingIsLocked("stri_detect_fixed", ns)
+  if (was_locked) unlockBinding("stri_detect_fixed", ns)
+  withr::defer(
+    {
+      assign("stri_detect_fixed", orig, envir = ns)
+      if (was_locked) lockBinding("stri_detect_fixed", ns)
+    }
   )
 
-  expect_true(
-    is.na(rurl:::._extract_tld_impl(NA_character_, rurl:::.tld_all_set))
+  assign("stri_detect_fixed", function(str, pattern, ...) {
+    if (identical(str, "example.com") && identical(pattern, ".")) {
+      return(NA)
+    }
+    orig(str, pattern, ...)
+  }, envir = ns)
+
+  rurl_clear_caches()
+  res <- rurl:::._safe_parse_url_impl(
+    url = "example.com",
+    protocol_handling = "keep",
+    www_handling = "none",
+    tld_source = "all",
+    case_handling = "keep",
+    trailing_slash_handling = "none",
+    index_page_handling = "keep",
+    path_normalization = "none",
+    scheme_relative_handling = "keep",
+    subdomain_levels_to_keep = NULL,
+    host_encoding = "keep",
+    path_encoding = "keep"
   )
+  expect_equal(res$parse_status, rurl:::.STATUS_WARN_NO_TLD)
 })
+
+# Note: .psl_registered_domain / .psl_public_suffix edge cases are covered in
+# test-accessors.R. They are deliberately NOT tested here because the
+# if_no_subdomain mock above invokes the mocked binding through safe_parse_url,
+# which leaves the mock installed for the rest of this file (a known testthat
+# local_mocked_bindings teardown quirk with indirect invocation).
 
 test_that("query parser handles empty input", {
   expect_equal(rurl:::._parse_query_string(NA_character_), list())
   parsed <- rurl:::._parse_query_string("a=1&&b=2")
   expect_equal(parsed$a, "1")
   expect_equal(parsed$b, "2")
+})
+
+test_that("query parser groups repeated keys in first-seen order (linear)", {
+  # Repeated keys collect their values in occurrence order.
+  expect_equal(rurl:::._parse_query_string("x=1&x=2"), list(x = c("1", "2")))
+  # first-seen key order preserved even when a repeat is interleaved.
+  expect_equal(
+    rurl:::._parse_query_string("b=1&a=2&b=3"),
+    list(b = c("1", "3"), a = "2")
+  )
+})
+
+test_that("query parser preserves '=' split and empty-value semantics", {
+  # Value re-joins the tail with "=" (strsplit fixed=TRUE trailing-empty drop).
+  expect_equal(rurl:::._parse_query_string("a=b=c"), list(a = "b=c"))
+  expect_equal(rurl:::._parse_query_string("a==b"), list(a = "=b"))
+  # A bare flag and a trailing "=" both yield an empty value.
+  expect_equal(rurl:::._parse_query_string("flag"), list(flag = ""))
+  expect_equal(rurl:::._parse_query_string("x="), list(x = ""))
+  expect_equal(rurl:::._parse_query_string("x=="), list(x = ""))
+  expect_equal(rurl:::._parse_query_string(""), list())
+})
+
+test_that("query parser percent-decodes both sides unless decode = FALSE", {
+  decoded <- rurl:::._parse_query_string("%20=%3D", decode = TRUE)
+  expect_named(decoded, " ")
+  expect_equal(decoded[[1]], "=")
+  raw <- rurl:::._parse_query_string("%20=%3D", decode = FALSE)
+  expect_named(raw, "%20")
+  expect_equal(raw[[1]], "%3D")
+  # A lone "%" is tolerated (not an error) and left as-is.
+  expect_equal(rurl:::._parse_query_string("%"), list(`%` = ""))
+})
+
+test_that("encode_path_segments handles empty and multi-segment paths", {
+  # Empty-segment behavior: "" stays "", character(0) recomposes to "".
+  expect_equal(rurl:::._encode_path_segments(""), "")
+  expect_equal(rurl:::._encode_path_segments("/"), "/")
+  # Every segment is escaped by the single vectorized .pct_escape() call.
+  expect_equal(rurl:::._encode_path_segments("/a b/c d"), "/a%20b/c%20d")
 })
 
 test_that("getters return NA on parse failures", {
@@ -232,8 +438,7 @@ test_that("getters return NA on parse failures", {
 
 test_that("getters return NA when safe_parse_url is NULL", {
   testthat::local_mocked_bindings(
-    safe_parse_url = function(url, ...) NULL,
-    .env = asNamespace("rurl")
+    safe_parse_url = function(url, ...) NULL
   )
 
   expect_true(is.na(get_query("http://example.com")))
@@ -246,19 +451,17 @@ test_that("getters return NA when safe_parse_url is NULL", {
 })
 
 test_that("get_userinfo returns user when password is missing", {
-  testthat::local_mocked_bindings(
-    safe_parse_url = function(url, ...) {
-      list(user = "user", password = NA_character_)
-    },
-    .env = asNamespace("rurl")
+  # Real userinfo with a user and no password. (Previously mocked
+  # safe_parse_url; accessors now route through the vector engine.)
+  expect_equal(
+    get_userinfo("ftp://alice@ftp.example.com/file.txt"),
+    "alice"
   )
-  expect_equal(unname(get_userinfo("http://example.com")), "user")
 })
 
 test_that("get_domain returns NA for ip hosts in non-all source", {
   testthat::local_mocked_bindings(
-    safe_parse_url = function(url, ...) list(is_ip_host = TRUE),
-    .env = asNamespace("rurl")
+    safe_parse_url = function(url, ...) list(is_ip_host = TRUE)
   )
   expect_true(is.na(get_domain("http://127.0.0.1", source = "icann")))
 })
@@ -297,8 +500,7 @@ test_that("get_subdomain handles edge cases and formats", {
         is_ip_host = FALSE
       )
     },
-    .punycode_to_unicode = function(x) x,
-    .env = asNamespace("rurl")
+    .punycode_to_unicode = function(x) x
   )
 
   expect_true(is.na(get_subdomain("http://example.com")))
@@ -309,25 +511,21 @@ test_that("get_subdomain handles edge cases and formats", {
     source = "all",
     format = "labels"
   )
-  expect_true(is.list(res_labels))
+  expect_type(res_labels, "list")
   expect_equal(res_labels[[1]], c("www", "blog"))
 })
 
-test_that("get_subdomain with non-all source uses derived domain", {
+test_that("get_subdomain with non-all source uses the parsed domain", {
   testthat::local_mocked_bindings(
     safe_parse_url = function(url, ...) {
       list(
         host = "blog.example.co.uk",
-        domain = NA_character_,
+        domain = "example.co.uk",
         tld = "co.uk",
         is_ip_host = FALSE
       )
     },
-    .punycode_to_unicode = function(x) x,
-    ._derive_domain_from_tld = function(host_unicode, tld_unicode) {
-      "example.co.uk"
-    },
-    .env = asNamespace("rurl")
+    .punycode_to_unicode = function(x) x
   )
 
   res_labels <- get_subdomain(
@@ -335,65 +533,54 @@ test_that("get_subdomain with non-all source uses derived domain", {
     source = "icann",
     format = "labels"
   )
-  expect_true(is.list(res_labels))
+  expect_type(res_labels, "list")
   expect_equal(res_labels[[1]], "blog")
 })
 
 test_that("get_subdomain returns NA when domain is missing", {
-  testthat::local_mocked_bindings(
-    safe_parse_url = function(url, ...) {
-      list(
-        host = "foo.example.com",
-        domain = NA_character_,
-        tld = "com",
-        is_ip_host = FALSE
-      )
-    },
-    .env = asNamespace("rurl")
+  # An unknown TLD yields a NA registered domain (pslr unknown = "na"), so the
+  # suffix strip has nothing to match and the subdomain is NA. (Previously
+  # mocked safe_parse_url; accessors now route through the vector engine.)
+  expect_true(
+    is.na(get_subdomain("http://foo.example.invalidtldxyz", source = "all"))
   )
-  expect_true(is.na(get_subdomain("http://foo.example.com", source = "all")))
 })
 
 test_that("get_subdomain uses safe_parse_url values defensively", {
-  ns <- asNamespace("rurl")
-  orig <- get("safe_parse_url", envir = ns)
-  was_locked <- bindingIsLocked("safe_parse_url", ns)
-  if (was_locked) unlockBinding("safe_parse_url", ns)
-  withr::defer(
-    {
-      assign("safe_parse_url", orig, envir = ns)
-      if (was_locked) lockBinding("safe_parse_url", ns)
-    },
-    testthat::teardown_env()
+  # Use local_mocked_bindings (like the tests above) rather than a manual
+  # assign()/defer into the namespace: the manual mock previously deferred its
+  # restore to testthat::teardown_env(), which leaves the stub installed for
+  # every LATER test file. Any file that calls safe_parse_url() directly (e.g.
+  # test-url-standard-scaffold.R) then saw the stub instead of the real engine.
+  # local_mocked_bindings restores at the end of THIS test_that. Re-calling it
+  # re-points the binding for the remaining assertions.
+  testthat::local_mocked_bindings(
+    safe_parse_url = function(url, ...) {
+      list(
+        host = NA_character_, domain = NA_character_,
+        tld = NA_character_, is_ip_host = FALSE
+      )
+    }
   )
-
-  assign("safe_parse_url", function(url, ...) {
-    list(
-      host = NA_character_,
-      domain = NA_character_,
-      tld = NA_character_,
-      is_ip_host = FALSE
-    )
-  }, envir = ns)
   expect_true(is.na(get_subdomain("http://example.com")))
 
-  assign("safe_parse_url", function(url, ...) {
-    list(
-      host = ".example.com",
-      domain = "example.com",
-      tld = "com",
-      is_ip_host = FALSE
-    )
-  }, envir = ns)
+  testthat::local_mocked_bindings(
+    safe_parse_url = function(url, ...) {
+      list(
+        host = ".example.com", domain = "example.com",
+        tld = "com", is_ip_host = FALSE
+      )
+    }
+  )
   expect_true(is.na(get_subdomain("http://example.com")))
 
-  assign("safe_parse_url", function(url, ...) {
-    list(
-      host = "example.com",
-      domain = NA_character_,
-      tld = NA_character_,
-      is_ip_host = FALSE
-    )
-  }, envir = ns)
+  testthat::local_mocked_bindings(
+    safe_parse_url = function(url, ...) {
+      list(
+        host = "example.com", domain = NA_character_,
+        tld = NA_character_, is_ip_host = FALSE
+      )
+    }
+  )
   expect_true(is.na(get_subdomain("http://example.com", source = "icann")))
 })

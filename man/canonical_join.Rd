@@ -75,19 +75,30 @@ controlling canonicalization (e.g., \code{protocol_handling},
 \code{www_handling}, \code{trailing_slash_handling},
 \code{index_page_handling}, \code{path_normalization},
 \code{scheme_relative_handling}, \code{host_encoding},
-\code{path_encoding}).}
+\code{path_encoding}, the \code{url_standard} selector, and the
+\code{profile} bundle). When \code{url_standard} is set, forwarding a
+governed low-level knob it would override (e.g. \code{path_normalization})
+is an error, exactly as in \code{\link{safe_parse_url}}; the orthogonal
+\code{path_encoding} and \code{host_encoding} presentation knobs layer
+freely on any profile. A \code{profile} (e.g. \code{"seo"},
+\code{"whatwg"}) may also be forwarded: like \code{\link{safe_parse_url}},
+it bundles several knobs, expands only into knobs you did not supply, and
+an explicit knob always overrides it (so the url_standard conflict check is
+skipped on the profile path). Inspect a bundle with
+\code{\link{url_profile}}. See "Legacy presentation dials" below for the
+arguments that warn.}
 }
 \value{
 A data frame representing the join. The output includes:
-  \itemize{
-    \item The original URL columns (named via \code{name_A} / \code{name_B},
-          or after the input expressions when those are \code{NULL}).
-    \item \code{JoinKey}: the canonicalized URL used for matching.
-    \item All other columns from \code{data_A} and \code{data_B} with
-          suffixes applied.
-  }
-  Returns an empty data frame with the expected structure if no matches
-  are found or if inputs are invalid.
+\itemize{
+\item The original URL columns (named via \code{name_A} / \code{name_B},
+or after the input expressions when those are \code{NULL}).
+\item \code{JoinKey}: the canonicalized URL used for matching.
+\item All other columns from \code{data_A} and \code{data_B} with
+suffixes applied.
+}
+Returns an empty data frame with the expected structure if no matches
+are found or if inputs are invalid.
 }
 \description{
 Performs a join between two data frames by canonicalizing URLs to a shared
@@ -95,21 +106,50 @@ Performs a join between two data frames by canonicalizing URLs to a shared
 that key.
 This is suitable for large crawl exports.
 }
+\section{Legacy presentation dials}{
+
+\code{canonical_join()} keys the join on the cleaned presentation string
+(\code{clean_url}), so every cleaning or display argument forwarded through
+\code{...} currently changes \emph{which rows match}. Those arguments do not
+participate in URL identity; they are legacy behavior retained for a
+deprecation window. Supplying any of
+\code{protocol_handling}, \code{www_handling}, \code{source},
+\code{tld_source}, \code{case_handling}, \code{trailing_slash_handling},
+\code{index_page_handling}, \code{path_normalization},
+\code{subdomain_levels_to_keep}, \code{host_encoding}, \code{path_encoding},
+\code{port_handling}, \code{engine}, \code{profile}, or any query cleaning
+dial (\code{query_handling}, \code{params_keep}, \code{params_drop},
+\code{params_case_sensitive}, \code{sort_params},
+\code{empty_param_handling}, \code{decode_plus})
+emits one warning per call, of class
+\code{"rurl_legacy_join_dial_warning"}. Results are unchanged: the warning
+is purely additive, so no caller is silently re-matched.
+
+The input and interpretation arguments \code{url_standard},
+\code{scheme_acceptance}, \code{scheme_policy}, and
+\code{scheme_relative_handling} are legitimate inputs to identity and never
+warn.
+
+Because the condition is classed, it can be silenced selectively without
+hiding other warnings:
+\code{suppressWarnings(canonical_join(A, B, www_handling = "strip"),
+classes = "rurl_legacy_join_dial_warning")}.
+}
+
 \examples{
 A <- data.frame(
-  URL = c("http://Example.com/Page", "http://example.com/Other"),
+  URL = c("https://Example.com/page", "https://example.com/other"),
   ValA = 1:2, stringsAsFactors = FALSE
 )
 B <- data.frame(
-  URL = c("https://www.example.com/Page/", "http://example.com/Miss"),
+  URL = c(
+    "https://example.com/page?utm_source=nl",
+    "https://example.com/missing"
+  ),
   ValB = c("x", "y"), stringsAsFactors = FALSE
 )
 
-canonical_join(
-  A, B,
-  protocol_handling = "strip",
-  www_handling = "strip",
-  case_handling = "lower_host",
-  trailing_slash_handling = "strip"
-)
+# Default canonicalization lower-cases the host and drops the query, so the
+# first row of each side shares one canonical key.
+canonical_join(A, B)
 }

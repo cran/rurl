@@ -1,22 +1,18 @@
-# Domain/TLD derivation (PSL) and punycode helpers. DO NOT modify punycode logic.
+# Domain/TLD derivation (PSL) and punycode helpers.
+# DO NOT modify punycode logic.
 
 # Internal helper to encode hostnames using IDNA (Punycode)
-# Accepts encode_fn for testability and fallback
+# Accepts encode_fn for testability and fallback. With the default encode_fn
+# (production) it delegates to the vectorized .normalize_and_punycode_vec() so
+# there is a single implementation; a non-default encode_fn (test double) takes
+# the scalar path below, bypassing the shared cache by design.
 .normalize_and_punycode <- function(host, encode_fn = punycoder::puny_encode) {
-  if (is.na(host) || !nzchar(host)) {
-    return(host)
+  if (identical(encode_fn, punycoder::puny_encode)) {
+    return(.normalize_and_punycode_vec(host))
   }
 
-  # Memoize on the raw host so repeated calls within a vector parse (the same
-  # host hits this across phases 6/7/9) and duplicate hosts across URLs collapse
-  # to one R->C++ crossing. Bypass when a non-default encode_fn is injected so
-  # test doubles never read or pollute the shared cache.
-  use_cache <- identical(encode_fn, punycoder::puny_encode)
-  if (use_cache) {
-    cached <- .cache_get("puny_encode", host)
-    if (!identical(cached, .rurl_cache_sentinel)) {
-      return(cached)
-    }
+  if (is.na(host) || !nzchar(host)) {
+    return(host)
   }
 
   host_nfc <- stringi::stri_trans_nfc(host) # Normalize Unicode
@@ -40,17 +36,106 @@
     return(NA_character_)
     # nocov end
   }
-  if (use_cache) {
-    .cache_set("puny_encode", host, encoded)
-  }
   encoded
 }
 
-# Internal helper to decode Punycode domain parts to Unicode
+# Vectorized IDNA/Punycode host encoder. Batch analogue of
+# .normalize_and_punycode() that preserves its exact per-host semantics:
+# NA/empty hosts pass through unchanged; each remaining host is NFC-normalized
+# then Punycode-encoded, strictly first and falling back to a lenient
+# (strict = FALSE) encode only for the hosts the strict pass rejects, and to NA
+# only when even the lenient encode errors (matching the scalar case preserving,
+# malformed-tolerant contract). Hosts are de-duplicated and memoized in the
+# puny_encode cache, so each unique unmemoized host costs one R->C++ crossing.
+# Always uses punycoder::puny_encode; the scalar wrapper keeps the encode_fn
+# injection seam for test doubles.
+.normalize_and_punycode_vec <- function(host) {
+  result <- host
+  process <- !is.na(host) & nzchar(host)
+  if (!any(process)) {
+    return(unname(result))
+  }
+
+  h <- host[process]
+  uniq_hosts <- unique(h)
+  hit <- logical(length(uniq_hosts))
+  encoded_uniq <- rep(NA_character_, length(uniq_hosts))
+  for (k in seq_along(uniq_hosts)) {
+    cached <- .cache_get("puny_encode", uniq_hosts[k])
+    if (!identical(cached, .rurl_cache_sentinel)) {
+      hit[k] <- TRUE
+      encoded_uniq[k] <- cached
+    }
+  }
+
+  miss_idx <- which(!hit)
+  if (length(miss_idx) > 0L) {
+    nfc <- stringi::stri_trans_nfc(uniq_hosts[miss_idx])
+    encoded <- tryCatch(
+      punycoder::puny_encode(nfc, strict = TRUE),
+      error = function(e) NULL
+    )
+    if (!is.character(encoded) || length(encoded) != length(nfc)) {
+      # A label made the strict batch throw: reproduce the scalar per-host
+      # strict -> lenient -> NA fallback exactly, element by element.
+      encoded <- vapply(
+        nfc,
+        function(x) {
+          tryCatch(
+            punycoder::puny_encode(x, strict = TRUE),
+            error = function(e) {
+              tryCatch(
+                punycoder::puny_encode(x, strict = FALSE),
+                error = function(e2) NA_character_
+              )
+            }
+          )
+        },
+        character(1),
+        USE.NAMES = FALSE
+      )
+    }
+    for (j in seq_along(miss_idx)) {
+      encoded_uniq[miss_idx[j]] <- encoded[j]
+      .cache_set("puny_encode", uniq_hosts[miss_idx[j]], encoded[j])
+    }
+  }
+
+  result[process] <- encoded_uniq[match(h, uniq_hosts)]
+  unname(result)
+}
+
+# Split hosts into their labels for the Punycode DECODE seam, preserving empty
+# labels — including the trailing one a root-dot FQDN ends with (RURL-eikgtrqf).
+#
+# This is the one dot split that deliberately does NOT use base
+# `strsplit(..., fixed = TRUE)`. ADR 0005 keeps that call for the STRUCTURAL
+# host/subdomain splits and records exactly why it is not `stringi`-equivalent:
+# it drops the trailing empty, so `"example.com."` splits to `c("example",
+# "com")`. A decision caller does not care — but this seam rejoins its labels
+# and returns the result as the rendered host, so the dropped label is dropped
+# from the OUTPUT. That silently collapsed `example.com.` onto `example.com`,
+# two hosts P3.2 (KJ-O1..O8) holds distinct, under `host_encoding = "unicode"`
+# alone. Preserving the label count is the whole point here, so the documented
+# equivalence gap is the reason to take the `stringi` side of it, not to avoid
+# it. Do not "align" this back to `strsplit` for consistency with the splits
+# ADR 0005 names.
+.split_host_labels <- function(hosts) {
+  stringi::stri_split_fixed(hosts, ".")
+}
+
+# Internal helper to decode Punycode domain parts to Unicode. With the default
+# decode_fn (production) it delegates to the vectorized
+# .punycode_to_unicode_vec() so there is a single implementation; a non-default
+# decode_fn (test double) takes the scalar path below, bypassing the cache.
 .punycode_to_unicode <- function(
   domain_puny,
   decode_fn = punycoder::puny_decode
 ) {
+  if (identical(decode_fn, punycoder::puny_decode)) {
+    return(.punycode_to_unicode_vec(domain_puny))
+  }
+
   if (is.na(domain_puny)) {
     return(NA_character_)
   }
@@ -58,17 +143,7 @@
     return("")
   }
 
-  # Memoize on the punycode input (see .normalize_and_punycode); bypass when a
-  # non-default decode_fn is injected so test doubles stay isolated.
-  use_cache <- identical(decode_fn, punycoder::puny_decode)
-  if (use_cache) {
-    cached <- .cache_get("puny_decode", domain_puny)
-    if (!identical(cached, .rurl_cache_sentinel)) {
-      return(cached)
-    }
-  }
-
-  parts_puny <- strsplit(domain_puny, "\\.")[[1]]
+  parts_puny <- .split_host_labels(domain_puny)[[1]]
 
   # No strict-retry here: the first attempt is already the lenient strict =
   # FALSE decode, and a strict = TRUE retry (punycoder's getOption default) is
@@ -78,8 +153,9 @@
     error = function(e) rep(NA_character_, length(parts_puny)) # nocov
   )
 
-  if (!is.character(decoded_labels) ||
-    length(decoded_labels) != length(parts_puny)) {
+  decoded_labels_invalid <- !is.character(decoded_labels) ||
+    length(decoded_labels) != length(parts_puny)
+  if (decoded_labels_invalid) {
     # nocov start
     decoded_labels <- rep(NA_character_, length(parts_puny))
     # nocov end
@@ -91,225 +167,351 @@
   sane_labels <- iconv(decoded_labels, from = "UTF-8", to = "UTF-8", sub = "")
   sane_labels[is.na(sane_labels)] <- ""
 
-  result <- paste(sane_labels, collapse = ".")
-  if (use_cache) {
-    .cache_set("puny_decode", domain_puny, result)
-  }
-  result
+  paste(sane_labels, collapse = ".")
 }
 
-# Internal helper to derive a registered domain from host + TLD
-._derive_domain_from_tld <- function(host_unicode, tld_unicode) {
-  if (is.na(host_unicode) || !nzchar(host_unicode)) {
-    return(NA_character_)
-  }
-  if (is.na(tld_unicode) || !nzchar(tld_unicode)) {
-    return(NA_character_)
-  }
-
-  host_lc <- stringi::stri_trans_tolower(host_unicode)
-  tld_lc <- stringi::stri_trans_tolower(tld_unicode)
-
-  if (host_lc == tld_lc) {
-    return(NA_character_)
-  }
-  suffix <- paste0(".", tld_lc)
-  if (!stringi::stri_endswith_fixed(host_lc, suffix)) {
-    return(NA_character_)
-  }
-
-  host_left <- stringi::stri_sub(
-    host_lc,
-    1,
-    stringi::stri_length(host_lc) - stringi::stri_length(suffix)
-  )
-  if (!nzchar(host_left)) {
-    return(NA_character_)
+# Vectorized Punycode -> Unicode decoder. Batch analogue of
+# .punycode_to_unicode() preserving its exact per-host semantics: NA -> NA,
+# "" -> "", and any other host decoded per label with the lenient
+# (strict = FALSE) decode, an undecodable label falling back to its original
+# spelling, iconv sanitizing to valid UTF-8, and the labels rejoined with ".".
+# All hosts are split to labels once and decoded in a single flattened
+# puny_decode call (regrouped by contiguous offsets, not split(), to avoid
+# factor-level ordering pitfalls); on a batch throw or shape mismatch it falls
+# back to a per-host decode that mirrors the scalar contract. De-duplicated and
+# memoized in the puny_decode cache. Always uses punycoder::puny_decode; the
+# scalar wrapper keeps the decode_fn injection seam for test doubles.
+.punycode_to_unicode_vec <- function(domain_puny) {
+  result <- rep(NA_character_, length(domain_puny))
+  result[!is.na(domain_puny) & !nzchar(domain_puny)] <- ""
+  process <- !is.na(domain_puny) & nzchar(domain_puny)
+  if (!any(process)) {
+    return(unname(result))
   }
 
-  labels <- strsplit(host_left, "\\.")[[1]]
-  paste0(utils::tail(labels, 1), ".", tld_lc)
-}
-
-# Internal helper to derive registered domain using Public Suffix List
-# Expects hostname_encoded to already be NFC-normalized, lowercased,
-# and Punycode-encoded if non-ASCII.
-# Uses pre-computed hash sets from .onLoad for O(1) lookups
-# instead of linear %in% searches.
-# Results are memoized for performance.
-.get_registered_domain <- function(hostname) {
-  # Check cache first
-  cached <- .cache_get("domain", hostname)
-  if (!identical(cached, .rurl_cache_sentinel)) {
-    return(cached)
-  }
-
-  result <- ._get_registered_domain_impl(hostname)
-
-  # Cache the result
-  .cache_set("domain", hostname, result)
-  result
-}
-
-# Split a host into its non-empty labels for PSL matching.
-#
-# Shared preamble for the registered-domain and TLD extraction paths so both
-# normalize hosts identically: strips a single trailing dot, rejects empty
-# labels, and requires at least two labels. Returns the label vector, or NULL
-# when the host cannot yield a registered domain / TLD (callers map NULL to
-# NA_character_).
-.host_labels <- function(host) {
-  if (is.na(host) || !nzchar(host)) {
-    return(NULL)
-  }
-
-  host_core <- if (stringi::stri_endswith_fixed(host, ".")) {
-    stringi::stri_sub(host, 1, stringi::stri_length(host) - 1)
-  } else {
-    host
-  }
-
-  if (!nzchar(host_core)) {
-    return(NULL)
-  }
-
-  parts <- strsplit(host_core, "\\.")[[1]]
-  if (any(!nzchar(parts))) {
-    return(NULL)
-  }
-
-  if (length(parts) < 2L) {
-    return(NULL)
-  }
-
-  parts
-}
-
-# Internal implementation of .get_registered_domain (not memoized)
-._get_registered_domain_impl <- function(hostname) {
-  parts <- .host_labels(hostname)
-  if (is.null(parts)) {
-    return(NA_character_)
-  }
-
-  n <- length(parts)
-
-  # 1. Exception rules (take precedence)
-  # Uses .psl_exception_set (environment) for O(1) lookup
-  for (i in seq_len(n)) {
-    candidate <- paste(parts[i:n], collapse = ".")
-
-    if (.in_set(candidate, .psl_exception_set)) {
-      # Exception match: treat the exception domain as *not* a suffix
-      # So return one label above it
-      return(candidate)
+  d <- domain_puny[process]
+  uniq_hosts <- unique(d)
+  hit <- logical(length(uniq_hosts))
+  decoded_uniq <- rep(NA_character_, length(uniq_hosts))
+  for (k in seq_along(uniq_hosts)) {
+    cached <- .cache_get("puny_decode", uniq_hosts[k])
+    if (!identical(cached, .rurl_cache_sentinel)) {
+      hit[k] <- TRUE
+      decoded_uniq[k] <- cached
     }
   }
 
-  # 2. Track best match length
-  best_match_len <- 0L
+  miss_idx <- which(!hit)
+  if (length(miss_idx) > 0L) {
+    miss_hosts <- uniq_hosts[miss_idx]
+    parts_list <- .split_host_labels(miss_hosts)
+    lens <- lengths(parts_list)
+    flat <- unlist(parts_list, use.names = FALSE)
 
-  for (i in seq_len(n)) { # i is the start index of a suffix candidate in parts
-    candidate_suffix_str <- paste(parts[i:n], collapse = ".")
-    num_parts_in_candidate_suffix <- n - i + 1L
-
-    # Check if candidate_suffix_str is an exact match in normal_rules
-    # Uses .psl_normal_set (environment) for O(1) lookup
-    if (.in_set(candidate_suffix_str, .psl_normal_set)) {
-      if (num_parts_in_candidate_suffix > best_match_len) {
-        best_match_len <- num_parts_in_candidate_suffix
-      }
-    }
-
-    # Check if candidate_suffix_str matches a wildcard rule.
-    # A wildcard rule means "*." + some_suffix_in_wildcard_rules.
-    # Uses .psl_wildcard_set (environment) for O(1) lookup
-    # Must have at least "label.wildcard_part"
-    if (num_parts_in_candidate_suffix > 1L) {
-      potential_wildcard_match_part <- paste(parts[(i + 1L):n], collapse = ".")
-      if (.in_set(potential_wildcard_match_part, .psl_wildcard_set)) {
-        if (num_parts_in_candidate_suffix > best_match_len) {
-          best_match_len <- num_parts_in_candidate_suffix
+    decoded_flat <- tryCatch(
+      punycoder::puny_decode(flat, strict = FALSE),
+      error = function(e) NULL
+    )
+    if (!is.character(decoded_flat) || length(decoded_flat) != length(flat)) {
+      # Batch decode threw or returned an unexpected shape: fall back to the
+      # scalar per-host contract (a failed host decodes to its original labels).
+      decoded_list <- lapply(parts_list, function(p) {
+        dl <- tryCatch(
+          punycoder::puny_decode(p, strict = FALSE),
+          error = function(e) rep(NA_character_, length(p)) # nocov
+        )
+        if (!is.character(dl) || length(dl) != length(p)) {
+          rep(NA_character_, length(p)) # nocov
+        } else {
+          dl
         }
-      }
+      })
+      decoded_flat <- unlist(decoded_list, use.names = FALSE)
+    }
+
+    na_lab <- is.na(decoded_flat)
+    decoded_flat[na_lab] <- flat[na_lab]
+    sane <- iconv(decoded_flat, from = "UTF-8", to = "UTF-8", sub = "")
+    sane[is.na(sane)] <- ""
+
+    ends <- cumsum(lens)
+    starts <- ends - lens + 1L
+    for (j in seq_along(miss_idx)) {
+      rejoined <- paste(sane[starts[j]:ends[j]], collapse = ".")
+      decoded_uniq[miss_idx[j]] <- rejoined
+      .cache_set("puny_decode", miss_hosts[j], rejoined)
     }
   }
 
-  if (best_match_len == 0L) {
-    return(NA_character_)
-  }
-
-  # If hostname is a public suffix itself
-  # (or shorter than the matched public suffix),
-  # it cannot be a "registered domain" by the eTLD+1 definition.
-  if (n <= best_match_len) {
-    return(NA_character_)
-  }
-
-  # Standard case: n > best_match_len
-  # The registered domain is the public suffix (best_match_len parts)
-  # plus one additional label to the left.
-  return(paste(parts[(n - best_match_len):n], collapse = "."))
+  result[process] <- decoded_uniq[match(d, uniq_hosts)]
+  unname(result)
 }
 
-# Internal helper using the exact original get_tld logic for TLD extraction
-# Uses hash set (environment) for O(1) lookup instead of linear %in% search.
-# Results are memoized for performance.
-._extract_tld_original_logic <- function(
-  host_to_process,
-  current_tld_set,
-  tld_source_id = "all"
-) {
-  if (is.na(host_to_process) || !nzchar(host_to_process)) {
-    return(NA_character_)
+# Public Suffix List queries are delegated to the pslr package. rurl maps its
+# own source selection and output contract onto pslr's query API:
+#
+#   * source "all" / "icann" / "private"  -> pslr `section` of the same name.
+#   * output defaults to Unicode (`output = "unicode"`), preserving rurl's
+#     historical decoded-IDN output even though pslr defaults to ASCII A-labels.
+#     Structural/decision callers (the www and subdomain-trim heuristics) keep
+#     this default so an A-label host and its Unicode form take the same branch.
+#     The emitted-value path (.derive_domain_tld -> parsed$domain / $tld)
+#     instead selects the spelling from host_encoding: "unicode", "ascii"
+#     ("idna"), or the input's own spelling ("keep", the default; see
+#     .host_is_ace()).
+#   * `unknown = "na"` so a host under an unknown TLD yields NA, matching rurl's
+#     long-standing "no PSL match => NA" behavior rather than pslr's default
+#     implicit `*` rule (which treats any unknown single label as a suffix).
+#   * `invalid = "na"` so malformed hosts return NA instead of erroring, per
+#     rurl's tolerant parsing contract.
+#
+# These helpers accept the host in any spelling pslr understands (Unicode,
+# lower/mixed case, or A-label); pslr canonicalizes via punycoder internally, so
+# callers no longer need to NFC-normalize or Punycode-encode the host first.
+
+# TRUE if any label of `host` is an ACE label (the "xn--" A-label prefix). Used
+# by the "keep" host_encoding to decide whether a derived domain/TLD should
+# mirror the input's punycode spelling (ASCII A-labels) rather than be decoded
+# to Unicode. Scalar input.
+.host_is_ace <- function(host) {
+  if (length(host) != 1L || is.na(host) || !nzchar(host)) {
+    return(FALSE)
   }
-
-  # Generate cache key including both host and source
-  cache_key <- paste(host_to_process, tld_source_id, sep = "\x1F")
-  cache_key <- stringi::stri_escape_unicode(enc2utf8(cache_key))
-
-  # Check cache
-  cached <- .cache_get("tld", cache_key)
-  if (!identical(cached, .rurl_cache_sentinel)) {
-    return(cached)
-  }
-
-  result <- ._extract_tld_impl(host_to_process, current_tld_set)
-
-  # Cache the result
-  .cache_set("tld", cache_key, result)
-  result
+  grepl("(^|\\.)xn--", host, ignore.case = TRUE)
 }
 
-# Internal implementation of TLD extraction (not memoized)
-._extract_tld_impl <- function(host_to_process, current_tld_set) {
-  normalized_host <- stringi::stri_trans_nfc(
-    stringi::stri_trans_tolower(host_to_process)
+# Vectorized .host_is_ace(): TRUE per element when any label is an ACE A-label.
+# NA or empty hosts are FALSE. Used by the vectorized domain/TLD phase to pick
+# the emitted spelling under host_encoding = "keep".
+#
+# `.grepl_decodable()` rather than bare `grepl()` (RURL-kmpnbvdl): an
+# undecodable host reaches here, and `ignore.case = TRUE` without `perl` is the
+# WIDE-CHARACTER path, which warns `unable to translate '<80>!' to a wide
+# string` and resolves case against LC_CTYPE. FALSE is the same answer it
+# already produced -- "xn--" is ASCII and an undecodable host is not a valid
+# A-label either way -- but now it is reached without consulting the locale.
+.host_is_ace_vec <- function(host) {
+  res <- .grepl_decodable("(^|\\.)xn--", host, ignore.case = TRUE)
+  res[is.na(host) | !nzchar(host)] <- FALSE
+  res
+}
+
+# Strict IDNA2008 domain validity, vectorized. Unlike .normalize_and_punycode()
+# -- which is deliberately TOLERANT of malformed-but-encodable hosts (ADR 0002)
+# and therefore CANNOT be used to decide conformance -- this seam delegates to
+# punycoder's strict validator to answer a yes/no IDNA question. Used only by
+# the email/userinfo diagnostics (mailto_domain_form = idna2008-domain), never
+# by the parse/present pipeline. NA in -> NA out; TRUE only for a domain that
+# passes strict IDNA2008.
+.validate_idna_domain_vec <- function(host) {
+  res <- rep(NA, length(host))
+  ok_in <- !is.na(host) & nzchar(host)
+  if (any(ok_in)) {
+    v <- punycoder::validate_domain(host[ok_in], strict = TRUE)
+    res[ok_in] <- as.logical(v$valid)
+  }
+  res
+}
+
+# Registered (eTLD+1) domain for a host. Vectorized. `output` selects the
+# spelling: "unicode" (default, preserving rurl's historical decoded-IDN output)
+# or "ascii" (lowercase A-labels). The structural callers that only need a
+# canonical decomposition keep the Unicode default; the emitted-value path
+# (.derive_domain_tld) overrides it to honor host_encoding.
+#
+# `engine` is the per-request pslr engine seam (RURL-mhibnqbd): NULL (the
+# default) OMITS the argument entirely so pslr resolves against its own
+# session-global default engine -- byte-identical to the pre-engine behavior --
+# while a `pslr::psl_engine()` snapshot resolves against that specific list.
+# NULL must not be forwarded: pslr rejects `engine = NULL` (it wants a
+# `psl_engine`), so the omit-when-NULL contract is load-bearing.
+.psl_registered_domain <- function(host, section = "all", output = "unicode",
+                                   engine = NULL) {
+  args <- list(
+    host,
+    section = section,
+    output = output,
+    unknown = "na",
+    invalid = "na"
   )
-  encoded_host <- .normalize_and_punycode(normalized_host)
+  if (!is.null(engine)) {
+    args$engine <- engine
+  }
+  do.call(pslr::registrable_domain, args)
+}
 
-  parts <- .host_labels(encoded_host)
-  if (is.null(parts)) {
-    return(NA_character_)
+# Public suffix (TLD) for a host. Vectorized. `output` / `engine` as in
+# .psl_registered_domain().
+.psl_public_suffix <- function(host, section = "all", output = "unicode",
+                               engine = NULL) {
+  args <- list(
+    host,
+    section = section,
+    output = output,
+    unknown = "na",
+    invalid = "na"
+  )
+  if (!is.null(engine)) {
+    args$engine <- engine
+  }
+  do.call(pslr::public_suffix, args)
+}
+
+# Full canonical decomposition of a host, in Unicode. Vectorized; returns a
+# data.frame with one row per input host and columns `subdomain`, `domain`,
+# `suffix`, `registrable_domain` (plus the canonicalized `host`). Used to make
+# STRUCTURAL policy decisions (subdomain presence, registrable boundary,
+# subdomain label count) on a single canonical spelling so that an A-label and
+# its Unicode equivalent take the same branch. pslr canonicalizes the host
+# (case / NFC / IDNA) internally, so the decomposition is identical for both
+# spellings. Same fixed contract as the other PSL seams: Unicode output, unknown
+# TLDs and invalid hosts become NA rather than `*` / errors. `engine` as in
+# .psl_registered_domain(): NULL omits the arg (session-global default engine).
+.psl_suffix_extract <- function(host, section = "all", engine = NULL) {
+  args <- list(
+    host,
+    section = section,
+    output = "unicode",
+    unknown = "na",
+    invalid = "na"
+  )
+  if (!is.null(engine)) {
+    args$engine <- engine
+  }
+  do.call(pslr::suffix_extract, args)
+}
+
+# --- punycoder DNS-length / UTS-46 diagnostic probe --------------------------
+#
+# Delegates the url_standard DNS-length/UTS-46 diagnostic seam (T6,
+# RURL-vowqpmdg) entirely to `punycoder::host_normalize()`; rurl owns only the
+# two structural detectors (empty-label, length subtyping) that
+# `host_normalize()` cannot itself express as an isolated flag. The algorithm
+# is a LOCKED design from T5 (RURL-kqmpbwye) -- see
+# `_scratch/T5-dns-uts46-probe-design-lock.md` for the full empirical
+# derivation and `tests/testthat/test-punycoder-host-probe-characterization.R`
+# for the version-drift tripwire pinning these exact `host_normalize()` call
+# shapes against the currently-installed punycoder. Do not re-derive the
+# design below without reading that doc first.
+#
+# Design summary:
+#   * An ALL-STRICT baseline with one flag relaxed at a time is ambiguous (a
+#     host failing 2-of-3 checks is indistinguishable from one failing
+#     3-of-3). The correct design inverts this: an ALL-RELAXED baseline, then
+#     exactly one flag ENABLED per isolated call. Each isolated call's
+#     NA/non-NA reading is then an independent fact about that one check
+#     alone, regardless of how many OTHER checks are simultaneously failing.
+#   * The 3 isolated calls (`call_a`/`call_b`/`call_c`, one per flag) are only
+#     trustworthy when `baseline` is non-NA; a NA baseline means a structural
+#     problem outside all 3 flags (only "domain-empty-label" in practice, e.g.
+#     "a..com"), never "fails all 3 checks".
+#   * `domain-empty-label` is a direct strsplit check, not a probe call: it is
+#     cheaper than a scoped `validate_domain()` call and does not compete with
+#     `host_normalize()`'s ambiguity at all (it never inspects other rules).
+#   * Length subtyping (label-too-long vs. name-too-long, independent and
+#     co-firing facts) reuses `baseline`'s own ACE-encoded (xn--...) output --
+#     never the raw input host -- because DNS length limits apply to the
+#     punycode-encoded label, not the raw Unicode codepoint count (boundary
+#     verified exactly at 63/253 octets on the ACE form). A scoped
+#     `validate_domain()` call was considered and rejected for this: it
+#     collapses both length facts to a single code when they co-occur.
+#   * `domain-std3-violation` (isolated `use_std3`) is a verified STRICT
+#     SUPERSET of WHATWG's forbidden-host-code-point set: it also rejects
+#     non-LDH ASCII punctuation (`_ + ~ * $`) that WHATWG does not itself
+#     forbid at the host-code-point level. Its meaning is "this host violates
+#     STD3 ASCII hostname rules", never narrowly "contains a WHATWG-forbidden
+#     code point".
+#
+# Callers are responsible for restricting `host` to the rows worth probing --
+# in particular, excluding IP literals. `use_std3` treats a bracketed IPv6
+# literal's "[", "]", ":" as violations (verified empirically), which would
+# misclassify every IPv6 host as a STD3 violation, and DNS-length/UTS-46
+# rules are meaningless for an IP literal in the first place. NA/empty
+# elements are treated as "nothing to probe" and read FALSE for every fact
+# (mirrors the empty-label-is-ambiguous-NA guard, without polluting a logical
+# vector with NA via `nzchar(NA)`).
+#
+# Vectorized; not deduplicated/cached (callers already dedup at the URL
+# level via ._url_metadata_vec()'s unique(url), and T5's benchmark found the
+# 4-call probe cost negligible -- ~12 microseconds/host -- so no cheaper
+# design is required here).
+#
+# Returns a list of 5 parallel logical vectors, same length as `host`:
+#   label_too_long, name_too_long, empty_label, hyphen_violation,
+#   std3_violation.
+.punycoder_host_probe <- function(host) {
+  n <- length(host)
+  label_too_long <- rep(FALSE, n)
+  name_too_long <- rep(FALSE, n)
+  empty_label <- rep(FALSE, n)
+  hyphen_violation <- rep(FALSE, n)
+  std3_violation <- rep(FALSE, n)
+  out <- list(
+    label_too_long = label_too_long,
+    name_too_long = name_too_long,
+    empty_label = empty_label,
+    hyphen_violation = hyphen_violation,
+    std3_violation = std3_violation
+  )
+
+  probe_idx <- which(!is.na(host) & nzchar(host))
+  if (length(probe_idx) == 0L) {
+    return(out)
   }
 
-  n <- length(parts)
+  h <- host[probe_idx]
 
-  if (n > 1L) {
-    for (i in seq_len(n - 1L)) { # Checks suffixes of length n down to 2
-      candidate <- paste(parts[i:n], collapse = ".") # Candidate is Punycode
-      if (.in_set(candidate, current_tld_set)) { # O(1) lookup
-        return(.punycode_to_unicode(candidate)) # Decodes matched Punycode TLD
-      }
-    }
+  # domain-empty-label: direct structural detector, no host_normalize() call.
+  # strsplit(..., fixed = TRUE) drops a trailing "" for a trailing dot
+  # ("a.com." -> c("a", "com")), which is exactly the FQDN-tolerant behavior
+  # host_normalize() itself exhibits -- do not swap for stringi's
+  # stri_split_fixed(), which keeps the trailing "" and would misfire on a
+  # valid trailing-root-dot FQDN (rurl house convention; see ADR 0005).
+  labels_list <- strsplit(h, ".", fixed = TRUE)
+  out$empty_label[probe_idx] <- vapply(
+    labels_list,
+    function(labels) !all(nzchar(labels)) || length(labels) == 0L,
+    logical(1)
+  )
+
+  # Accepted design (T5): all-relaxed baseline, then one flag enabled at a
+  # time. Only rows where the baseline succeeds feed the 3 isolated calls.
+  baseline <- punycoder::host_normalize(
+    h, check_hyphens = FALSE, use_std3 = FALSE, verify_dns_length = FALSE
+  )
+  baseline_ok <- which(!is.na(baseline))
+  if (length(baseline_ok) == 0L) {
+    return(out)
   }
 
-  if (n > 0L) { # Fallback to last part
-    last_candidate <- parts[n] # Punycode
-    if (.in_set(last_candidate, current_tld_set)) { # O(1) lookup
-      return(.punycode_to_unicode(last_candidate))
-    }
+  ok_idx <- probe_idx[baseline_ok]
+  hb <- h[baseline_ok]
+
+  call_a <- punycoder::host_normalize(
+    hb, check_hyphens = TRUE, use_std3 = FALSE, verify_dns_length = FALSE
+  )
+  call_b <- punycoder::host_normalize(
+    hb, check_hyphens = FALSE, use_std3 = TRUE, verify_dns_length = FALSE
+  )
+  call_c <- punycoder::host_normalize(
+    hb, check_hyphens = FALSE, use_std3 = FALSE, verify_dns_length = TRUE
+  )
+
+  out$hyphen_violation[ok_idx] <- is.na(call_a)
+  out$std3_violation[ok_idx] <- is.na(call_b)
+
+  # Length subtyping: only meaningful where call_c genuinely failed. Both
+  # facts are independent booleans and can co-fire on the same host.
+  length_failed <- which(is.na(call_c))
+  if (length(length_failed) > 0L) {
+    base_ace <- baseline[baseline_ok][length_failed]
+    len_idx <- ok_idx[length_failed]
+    ace_labels <- strsplit(base_ace, ".", fixed = TRUE)
+    out$label_too_long[len_idx] <- vapply(
+      ace_labels, function(x) any(nchar(x) > 63L), logical(1)
+    )
+    out$name_too_long[len_idx] <- nchar(sub("[.]$", "", base_ace)) > 253L
   }
 
-  return(NA_character_)
+  out
 }

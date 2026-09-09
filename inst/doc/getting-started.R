@@ -25,30 +25,30 @@ get_clean_url(urls)
 
 ## -----------------------------------------------------------------------------
 get_host(
-  "http://www.three.two.one.example.com",
+  "www.three.two.one.example.com",
   subdomain_levels_to_keep = 0
 ) # www_handling default is "none"
 # Expected: "www.example.com"
 
 get_host(
-  "http://three.two.one.example.com",
+  "three.two.one.example.com",
   www_handling = "strip",
   subdomain_levels_to_keep = 0
 )
 # Expected: "example.com"
 
-get_host("http://www.three.two.one.example.com", subdomain_levels_to_keep = 1)
+get_host("www.three.two.one.example.com", subdomain_levels_to_keep = 1)
 # Expected: "www.one.example.com"
 
 get_host(
-  "http://three.two.one.example.com",
+  "three.two.one.example.com",
   www_handling = "strip",
   subdomain_levels_to_keep = 1
 )
 # Expected: "one.example.com"
 
 get_host(
-  "http://www.three.two.one.example.com",
+  "www.three.two.one.example.com",
   www_handling = "keep",
   subdomain_levels_to_keep = 2
 )
@@ -60,11 +60,27 @@ get_clean_url(
   subdomain_levels_to_keep = 0,
   www_handling = "keep"
 )
-# Expected: "http://www.example.com/some/path"
+# yields http://www.example.com/some/path
 
 get_clean_url(
   "http://deep.sub.example.com/some/path",
   subdomain_levels_to_keep = 1
 )
-# Expected: "http://sub.example.com/some/path"
+# yields http://sub.example.com/some/path
+
+## ----output-surfaces----------------------------------------------------------
+u <- "https://user:pw@Example.COM:443/a/../b?q=1#frag"
+
+# (c) cleaning -- an SEO/canonicalization product, intentionally lossy
+get_clean_url(u)
+
+# (b) standard serialization -- the full string, exactly as WHATWG would
+#     write it. No presentation dial reaches it.
+serialize_url(u)
+
+# (d) safe display -- for showing a person
+format_url(u)
+
+## ----output-display-----------------------------------------------------------
+format_url("https://example.com/a%2Fb?x=a%26b%3Dc#%E2%80%AEevil")
 

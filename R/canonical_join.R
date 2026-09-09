@@ -47,7 +47,46 @@
 #'   \code{www_handling}, \code{trailing_slash_handling},
 #'   \code{index_page_handling}, \code{path_normalization},
 #'   \code{scheme_relative_handling}, \code{host_encoding},
-#'   \code{path_encoding}).
+#'   \code{path_encoding}, the \code{url_standard} selector, and the
+#'   \code{profile} bundle). When \code{url_standard} is set, forwarding a
+#'   governed low-level knob it would override (e.g. \code{path_normalization})
+#'   is an error, exactly as in \code{\link{safe_parse_url}}; the orthogonal
+#'   \code{path_encoding} and \code{host_encoding} presentation knobs layer
+#'   freely on any profile. A \code{profile} (e.g. \code{"seo"},
+#'   \code{"whatwg"}) may also be forwarded: like \code{\link{safe_parse_url}},
+#'   it bundles several knobs, expands only into knobs you did not supply, and
+#'   an explicit knob always overrides it (so the url_standard conflict check is
+#'   skipped on the profile path). Inspect a bundle with
+#'   \code{\link{url_profile}}. See "Legacy presentation dials" below for the
+#'   arguments that warn.
+#'
+#' @section Legacy presentation dials:
+#' \code{canonical_join()} keys the join on the cleaned presentation string
+#' (\code{clean_url}), so every cleaning or display argument forwarded through
+#' \code{...} currently changes \emph{which rows match}. Those arguments do not
+#' participate in URL identity; they are legacy behavior retained for a
+#' deprecation window. Supplying any of
+#' \code{protocol_handling}, \code{www_handling}, \code{source},
+#' \code{tld_source}, \code{case_handling}, \code{trailing_slash_handling},
+#' \code{index_page_handling}, \code{path_normalization},
+#' \code{subdomain_levels_to_keep}, \code{host_encoding}, \code{path_encoding},
+#' \code{port_handling}, \code{engine}, \code{profile}, or any query cleaning
+#' dial (\code{query_handling}, \code{params_keep}, \code{params_drop},
+#' \code{params_case_sensitive}, \code{sort_params},
+#' \code{empty_param_handling}, \code{decode_plus})
+#' emits one warning per call, of class
+#' \code{"rurl_legacy_join_dial_warning"}. Results are unchanged: the warning
+#' is purely additive, so no caller is silently re-matched.
+#'
+#' The input and interpretation arguments \code{url_standard},
+#' \code{scheme_acceptance}, \code{scheme_policy}, and
+#' \code{scheme_relative_handling} are legitimate inputs to identity and never
+#' warn.
+#'
+#' Because the condition is classed, it can be silenced selectively without
+#' hiding other warnings:
+#' \code{suppressWarnings(canonical_join(A, B, www_handling = "strip"),
+#' classes = "rurl_legacy_join_dial_warning")}.
 #'
 #' @return A data frame representing the join. The output includes:
 #'   \itemize{
@@ -64,21 +103,20 @@
 #' @export
 #' @examples
 #' A <- data.frame(
-#'   URL = c("http://Example.com/Page", "http://example.com/Other"),
+#'   URL = c("https://Example.com/page", "https://example.com/other"),
 #'   ValA = 1:2, stringsAsFactors = FALSE
 #' )
 #' B <- data.frame(
-#'   URL = c("https://www.example.com/Page/", "http://example.com/Miss"),
+#'   URL = c(
+#'     "https://example.com/page?utm_source=nl",
+#'     "https://example.com/missing"
+#'   ),
 #'   ValB = c("x", "y"), stringsAsFactors = FALSE
 #' )
 #'
-#' canonical_join(
-#'   A, B,
-#'   protocol_handling = "strip",
-#'   www_handling = "strip",
-#'   case_handling = "lower_host",
-#'   trailing_slash_handling = "strip"
-#' )
+#' # Default canonicalization lower-cases the host and drops the query, so the
+#' # first row of each side shares one canonical key.
+#' canonical_join(A, B)
 canonical_join <- function(data_A, data_B,
                            col_A = "URL", col_B = "URL",
                            suffix_A = "_A", suffix_B = "_B",
@@ -95,151 +133,60 @@ canonical_join <- function(data_A, data_B,
   on_parse_error <- match.arg(on_parse_error)
   join_parse_status <- match.arg(join_parse_status)
 
-  if (!is.data.frame(data_A) || !is.data.frame(data_B)) {
-    warning("Inputs 'data_A' and 'data_B' must be data frames.", call. = FALSE)
+  # url_standard (RURL-eqzkkohm) and profile (RURL-djmgzjmr) both flow through
+  # `...` here -- canonical_join has no named parse formals, so missing() cannot
+  # see which knobs the caller supplied. Both are forwarded verbatim to
+  # safe_parse_urls() (each is a named formal there and resolves in its own
+  # frame); canonical_join only pre-runs the url_standard conflict check.
+  #
+  # On the PROFILE path that conflict matrix is SKIPPED, exactly as in
+  # safe_parse_url(): a profile authorizes its own knob combination (e.g.
+  # `rfc-syntax` = rfc3986 + no normalization), and the iron rule lets explicit
+  # knobs override. Direct (profile-less) calls keep ADR 0007's fail-fast
+  # behavior via .check_url_standard_conflicts_dots(). Validate the profile up
+  # front so a bad name fails here rather than deep in safe_parse_urls().
+  dots <- list(...)
+  profile <- .validate_profile(dots$profile)
+  if (is.null(profile)) {
+    .check_url_standard_conflicts_dots(dots)
+  }
+  # P3.1 D-E.1: the unrestricted `...` that makes every cleaning/display dial
+  # an equality dial is closed by WARNING (results stay byte-identical). Warn
+  # here, once, and after the hard checks above: safe_parse_urls() is called
+  # twice below (once per side), so warning at either call site would double
+  # up, and a call that fails the conflict matrix should error, not also warn.
+  .cj_warn_legacy_dials(names(dots))
+
+  if (!.cj_validate_inputs(data_A, data_B, col_A, col_B)) {
     return(data.frame())
   }
-  if (!col_A %in% names(data_A)) {
-    warning(paste0("Column '", col_A, "' not found in data_A."), call. = FALSE)
-    return(data.frame())
-  }
-  if (!col_B %in% names(data_B)) {
-    warning(paste0("Column '", col_B, "' not found in data_B."), call. = FALSE)
-    return(data.frame())
-  }
-  if (!is.character(data_A[[col_A]]) && !is.factor(data_A[[col_A]])) {
-    warning(
-      paste0("Column '", col_A, "' in data_A must be character or factor."),
-      call. = FALSE
-    )
-    return(data.frame())
-  }
-  if (!is.character(data_B[[col_B]]) && !is.factor(data_B[[col_B]])) {
-    warning(
-      paste0("Column '", col_B, "' in data_B must be character or factor."),
-      call. = FALSE
-    )
-    return(data.frame())
-  }
 
-  # Expected output structure for empty results, preserving column types
-  empty_cols <- list()
-  empty_cols[[name_A]] <- data_A[0, col_A, drop = TRUE]
-  empty_cols[[name_B]] <- data_B[0, col_B, drop = TRUE]
-  empty_cols[["JoinKey"]] <- character(0)
-  other_cols_A <- setdiff(names(data_A), col_A)
-  for (oca in other_cols_A) {
-    empty_cols[[paste0(oca, suffix_A)]] <- data_A[0, oca, drop = TRUE]
-  }
-  other_cols_B <- setdiff(names(data_B), col_B)
-  for (ocb in other_cols_B) {
-    empty_cols[[paste0(ocb, suffix_B)]] <- data_B[0, ocb, drop = TRUE]
-  }
-  empty_output_template <- data.frame(empty_cols, stringsAsFactors = FALSE)
-  empty_output_template <- empty_output_template[
-    , unique(names(empty_output_template)),
-    drop = FALSE
-  ]
-
-  # Parse URLs into canonical keys
-  parsed_A <- safe_parse_urls(as.character(data_A[[col_A]]), ...)
-  parsed_B <- safe_parse_urls(as.character(data_B[[col_B]]), ...)
-
-  key_A <- parsed_A$clean_url %||% rep(NA_character_, nrow(data_A))
-  key_B <- parsed_B$clean_url %||% rep(NA_character_, nrow(data_B))
-  status_A <- parsed_A$parse_status %||% rep("error", nrow(data_A))
-  status_B <- parsed_B$parse_status %||% rep("error", nrow(data_B))
-
-  status_pattern <- if (join_parse_status == "ok_or_warning") {
-    "^(ok|warning)"
-  } else {
-    "^ok"
-  }
-  ok_A <- !is.na(key_A) & nzchar(key_A) & grepl(status_pattern, status_A)
-  ok_B <- !is.na(key_B) & nzchar(key_B) & grepl(status_pattern, status_B)
-
-  if (on_parse_error == "error" && (any(!ok_A) || any(!ok_B))) {
-    stop("canonical_join() encountered URL parsing errors.", call. = FALSE)
-  }
-
-  # Optionally drop rows that failed to parse
-  data_A_work <- data_A
-  data_B_work <- data_B
-  if (on_parse_error == "drop") {
-    data_A_work <- data_A_work[ok_A, , drop = FALSE]
-    data_B_work <- data_B_work[ok_B, , drop = FALSE]
-    key_A <- key_A[ok_A]
-    key_B <- key_B[ok_B]
-    ok_A <- ok_A[ok_A]
-    ok_B <- ok_B[ok_B]
-  }
-
-  # Handle duplicate keys
-  if (collision != "all") {
-    dup_A <- duplicated(key_A) & ok_A
-    dup_B <- duplicated(key_B) & ok_B
-    if (collision == "error" && (any(dup_A) || any(dup_B))) {
-      stop(
-        paste0(
-          "canonical_join() found duplicate canonical keys. ",
-          "Use collision = \"all\" or \"first\"."
-        ),
-        call. = FALSE
-      )
-    }
-    if (collision == "first") {
-      keep_A <- !ok_A | !duplicated(key_A)
-      keep_B <- !ok_B | !duplicated(key_B)
-      data_A_work <- data_A_work[keep_A, , drop = FALSE]
-      data_B_work <- data_B_work[keep_B, , drop = FALSE]
-      key_A <- key_A[keep_A]
-      key_B <- key_B[keep_B]
-      ok_A <- ok_A[keep_A]
-      ok_B <- ok_B[keep_B]
-    }
-  }
-
-  # Internal join keys (avoid matching NA rows when on_parse_error = "keep")
-  join_key_A <- key_A
-  join_key_B <- key_B
-  if (on_parse_error == "keep") {
-    join_key_A <- ifelse(
-      ok_A, key_A, paste0(".__rurl_na_A__", seq_len(nrow(data_A_work)))
-    )
-    join_key_B <- ifelse(
-      ok_B, key_B, paste0(".__rurl_na_B__", seq_len(nrow(data_B_work)))
-    )
-  }
-
-  df_A_join <- data.frame(
-    .join_key = join_key_A,
-    .join_key_out_A = ifelse(ok_A, key_A, NA_character_),
-    .orig_url_A = data_A_work[[col_A]],
-    stringsAsFactors = FALSE
+  empty_output_template <- .cj_empty_template(
+    data_A, data_B, col_A, col_B, name_A, name_B, suffix_A, suffix_B
   )
-  other_cols_A <- setdiff(names(data_A_work), col_A)
-  for (oca in other_cols_A) {
-    df_A_join[[paste0(oca, suffix_A)]] <- data_A_work[[oca]]
-  }
 
-  df_B_join <- data.frame(
-    .join_key = join_key_B,
-    .join_key_out_B = ifelse(ok_B, key_B, NA_character_),
-    .orig_url_B = data_B_work[[col_B]],
-    stringsAsFactors = FALSE
+  # Parse URLs into canonical keys, then resolve drop/collision policy.
+  side_A <- .cj_side_state(
+    safe_parse_urls(as.character(data_A[[col_A]]), ...),
+    data_A, join_parse_status
   )
-  other_cols_B <- setdiff(names(data_B_work), col_B)
-  for (ocb in other_cols_B) {
-    df_B_join[[paste0(ocb, suffix_B)]] <- data_B_work[[ocb]]
-  }
+  side_B <- .cj_side_state(
+    safe_parse_urls(as.character(data_B[[col_B]]), ...),
+    data_B, join_parse_status
+  )
 
-  all_x <- join %in% c("left", "full")
-  all_y <- join %in% c("right", "full")
+  sides <- .cj_resolve_sides(side_A, side_B, on_parse_error, collision)
+  side_A <- sides$A
+  side_B <- sides$B
+
+  df_A_join <- .cj_build_join_df(side_A, col_A, suffix_A, on_parse_error, "A")
+  df_B_join <- .cj_build_join_df(side_B, col_B, suffix_B, on_parse_error, "B")
+
   joined <- merge(
     df_A_join, df_B_join,
     by = ".join_key",
-    all.x = all_x,
-    all.y = all_y,
+    all.x = join %in% c("left", "full"),
+    all.y = join %in% c("right", "full"),
     sort = FALSE
   )
 
@@ -247,6 +194,229 @@ canonical_join <- function(data_A, data_B,
     return(empty_output_template)
   }
 
+  .cj_assemble_result(joined, name_A, name_B)
+}
+
+# Presentation/cleaning arguments that are comparison-irrelevant: they shape
+# how a URL is DISPLAYED, never what it IS. canonical_join() keys on clean_url,
+# so forwarding one still moves the match set -- exactly the legacy defect
+# P3.1 D-E.1 makes non-silent.
+#
+# The authority is the per-dial `key-affecting?` column of the
+# design/work/url-v3/contracts/cleaning-mutation-contracts.md
+# section "cleaning-semantics" table, which classifies all 25 shipped dials
+# and is SETTLED for every row below. Row numbers are noted so the list can be
+# diffed against the table. Every row marked key-affecting `no` is here.
+#
+# Deliberately NOT listed -- the table's four boundary rows, which are input /
+# interpretation axes rather than clean transforms, and so are legitimate
+# inputs to identity:
+#   row  9  scheme_relative_handling -- "input interpretation ... not a clean
+#           transform ... governed as input, not by cleaning" (ADR 0010)
+#   row 21  scheme_policy            -- input acceptance axis
+#   row 22  scheme_acceptance        -- input acceptance axis
+#   row 23  url_standard             -- interpretation axis (a different
+#           standard is a different identity, not a clean edit)
+# These four are also exactly what key-join-contracts.md admits as
+# interpretation/key-policy inputs.
+#
+# Note `source` (row 3) and `tld_source` (row 4) are the SAME PSL-section dial
+# under two live spellings, one per surface -- neither is deprecated, and
+# neither is an alias retained for compatibility. Only `tld_source` is a formal
+# of safe_parse_urls(); `source` is a formal on the accessors (R/accessors.R),
+# which forward it inward as `tld_source`, so it is not reachable through this
+# seam today. It is listed anyway so the classification is complete and stays
+# correct if the seam widens.
+.CJ_LEGACY_PRESENTATION_DIALS <- c(
+  "protocol_handling",        # row 1
+  "www_handling",             # row 2
+  "source",                   # row 3
+  "tld_source",               # row 4
+  "case_handling",            # row 5
+  "trailing_slash_handling",  # row 6
+  "index_page_handling",      # row 7
+  "path_normalization",       # row 8
+  "subdomain_levels_to_keep", # row 10
+  "host_encoding",            # row 11
+  "path_encoding",            # row 12
+  "query_handling",           # rows 13-19
+  "params_keep",
+  "params_drop",
+  "params_case_sensitive",
+  "sort_params",
+  "empty_param_handling",
+  "decode_plus",
+  "port_handling",            # row 20
+  "engine",                   # row 24
+  "profile"                   # row 25
+)
+
+# Partition the supplied `...` names into the legacy presentation dials. Driven
+# purely off names because canonical_join() has no named parse formals -- there
+# is nothing for missing() to see.
+.cj_classify_dots <- function(dot_names) {
+  if (is.null(dot_names)) {
+    return(character(0))
+  }
+  intersect(dot_names, .CJ_LEGACY_PRESENTATION_DIALS)
+}
+
+# Emit one classed warning naming every legacy presentation dial supplied.
+# The class lets callers mute this specific condition without blanket
+# suppressWarnings(). Returns the offenders invisibly for testability.
+.cj_warn_legacy_dials <- function(dot_names) {
+  offenders <- .cj_classify_dots(dot_names)
+  if (length(offenders) == 0L) {
+    return(invisible(character(0)))
+  }
+  msg <- paste0(
+    "canonical_join() received presentation/cleaning argument(s) through ",
+    "`...`: ", paste0("`", offenders, "`", collapse = ", "), ". ",
+    "These arguments do not participate in URL identity. They are legacy ",
+    "behavior retained for a deprecation window, and they currently still ",
+    "change which rows match, because this join is keyed on the cleaned ",
+    "presentation string (clean_url) rather than on an identity key. Only ",
+    "`url_standard`, `scheme_acceptance`, `scheme_policy` and ",
+    "`scheme_relative_handling` are input/interpretation axes, and they do ",
+    "not warn. Suppress selectively with ",
+    "suppressWarnings(..., classes = \"rurl_legacy_join_dial_warning\")."
+  )
+  warning(warningCondition(
+    msg,
+    class = "rurl_legacy_join_dial_warning",
+    call = NULL
+  ))
+  invisible(offenders)
+}
+
+# Validate canonical_join() inputs, emitting the same warnings as before and
+# returning FALSE (so the caller returns an empty data.frame) on any failure.
+.cj_validate_inputs <- function(data_A, data_B, col_A, col_B) {
+  if (!is.data.frame(data_A) || !is.data.frame(data_B)) {
+    warning("Inputs 'data_A' and 'data_B' must be data frames.", call. = FALSE)
+    return(FALSE)
+  }
+  .cj_validate_column(data_A, col_A, "data_A") &&
+    .cj_validate_column(data_B, col_B, "data_B")
+}
+
+# Validate one side's URL column: it must exist and be character or factor.
+.cj_validate_column <- function(data, col, which) {
+  if (!col %in% names(data)) {
+    warning("Column '", col, "' not found in ", which, ".", call. = FALSE)
+    return(FALSE)
+  }
+  if (!is.character(data[[col]]) && !is.factor(data[[col]])) {
+    warning(
+      "Column '", col, "' in ", which, " must be character or factor.",
+      call. = FALSE
+    )
+    return(FALSE)
+  }
+  TRUE
+}
+
+# Apply the on_parse_error and collision policies to both sides, stopping on
+# the "error" variants and returning the (possibly filtered) sides.
+.cj_resolve_sides <- function(side_A, side_B, on_parse_error, collision) {
+  if (on_parse_error == "error" && (!all(side_A$ok) || !all(side_B$ok))) {
+    stop("canonical_join() encountered URL parsing errors.", call. = FALSE)
+  }
+  if (on_parse_error == "drop") {
+    side_A <- .cj_drop_unparsed(side_A)
+    side_B <- .cj_drop_unparsed(side_B)
+  }
+  if (collision != "all") {
+    has_dup <- any(duplicated(side_A$key) & side_A$ok) ||
+      any(duplicated(side_B$key) & side_B$ok)
+    if (collision == "error" && has_dup) {
+      stop(
+        "canonical_join() found duplicate canonical keys. ",
+        "Use collision = \"all\" or \"first\".",
+        call. = FALSE
+      )
+    }
+    if (collision == "first") {
+      side_A <- .cj_keep_first(side_A)
+      side_B <- .cj_keep_first(side_B)
+    }
+  }
+  list(A = side_A, B = side_B)
+}
+
+# Expected output structure for empty results, preserving column types.
+.cj_empty_template <- function(data_A, data_B, col_A, col_B,
+                               name_A, name_B, suffix_A, suffix_B) {
+  empty_cols <- list()
+  empty_cols[[name_A]] <- data_A[0, col_A, drop = TRUE]
+  empty_cols[[name_B]] <- data_B[0, col_B, drop = TRUE]
+  empty_cols[["JoinKey"]] <- character(0)
+  for (oca in setdiff(names(data_A), col_A)) {
+    empty_cols[[paste0(oca, suffix_A)]] <- data_A[0, oca, drop = TRUE]
+  }
+  for (ocb in setdiff(names(data_B), col_B)) {
+    empty_cols[[paste0(ocb, suffix_B)]] <- data_B[0, ocb, drop = TRUE]
+  }
+  template <- data.frame(empty_cols, stringsAsFactors = FALSE)
+  template[, unique(names(template)), drop = FALSE]
+}
+
+# Per-side parse state: the working data frame plus the canonical key vector
+# and the joinable-row mask. Bundling these keeps the drop/collision steps to
+# a single object per side.
+.cj_side_state <- function(parsed, data, join_parse_status) {
+  n <- nrow(data)
+  key <- parsed$clean_url %||% rep(NA_character_, n)
+  status <- parsed$parse_status %||% rep("error", n)
+  ok <- !is.na(key) & nzchar(key) &
+    .is_joinable_status(status, join_parse_status)
+  list(data = data, key = key, ok = ok)
+}
+
+# Drop rows that failed to parse (on_parse_error = "drop").
+.cj_drop_unparsed <- function(side) {
+  keep <- side$ok
+  side$data <- side$data[keep, , drop = FALSE]
+  side$key <- side$key[keep]
+  side$ok <- side$ok[keep]
+  side
+}
+
+# Keep the first row per canonical key (collision = "first"); NA-key rows are
+# all retained.
+.cj_keep_first <- function(side) {
+  keep <- !side$ok | !duplicated(side$key)
+  side$data <- side$data[keep, , drop = FALSE]
+  side$key <- side$key[keep]
+  side$ok <- side$ok[keep]
+  side
+}
+
+# Build one side's join data frame: the internal match key, the emitted key,
+# the original URL, and the suffixed payload columns. NA-key rows get a unique
+# sentinel match key when on_parse_error = "keep" so they never match.
+.cj_build_join_df <- function(side, col, suffix, on_parse_error, side_tag) {
+  data_work <- side$data
+  join_key <- side$key
+  if (on_parse_error == "keep") {
+    join_key <- ifelse(
+      side$ok, side$key,
+      paste0(".__rurl_na_", side_tag, "__", seq_len(nrow(data_work)))
+    )
+  }
+  df <- data.frame(.join_key = join_key, stringsAsFactors = FALSE)
+  df[[paste0(".join_key_out_", side_tag)]] <-
+    ifelse(side$ok, side$key, NA_character_)
+  df[[paste0(".orig_url_", side_tag)]] <- data_work[[col]]
+  for (oc in setdiff(names(data_work), col)) {
+    df[[paste0(oc, suffix)]] <- data_work[[oc]]
+  }
+  df
+}
+
+# Assemble the public result from the merged frame: coalesce the emitted key
+# across sides, restore the original URL column names, and drop internals.
+.cj_assemble_result <- function(joined, name_A, name_B) {
   join_key_out <- joined$.join_key_out_A
   if (!is.null(joined$.join_key_out_B)) {
     na_idx <- is.na(join_key_out)
@@ -269,8 +439,7 @@ canonical_join <- function(data_A, data_B,
     ".orig_url_A",
     ".orig_url_B"
   )
-  other_cols <- setdiff(names(joined), drop_cols)
-  for (col_name in other_cols) {
+  for (col_name in setdiff(names(joined), drop_cols)) {
     result[[col_name]] <- joined[[col_name]]
   }
 

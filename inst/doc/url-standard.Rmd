@@ -1,0 +1,293 @@
+---
+title: "Standard-conformant parsing with url_standard"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Standard-conformant parsing with url_standard}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+library(rurl)
+```
+
+## Why a selector?
+
+`rurl` exposes many low-level normalization knobs (`path_encoding`,
+`path_normalization`, `case_handling`, the host model, …). Assembling a coherent
+"RFC 3986-conformant" or "WHATWG-conformant" profile by hand means getting
+several of them consistent at once, and getting one wrong yields subtly
+non-conformant output.
+
+The `url_standard` selector does that assembly for you. It takes one of three
+values:
+
+- `NULL` (default) — today's behavior, exactly. Fully backward compatible:
+  byte-for-byte identical output and unchanged result shape.
+- `"rfc3986"` — the RFC 3986 profile.
+- `"whatwg"` — the WHATWG URL Standard profile (on the axes `rurl` governs).
+
+There is **no default flip**: the selector is purely additive, and `NULL`
+callers are unaffected. It is accepted by `safe_parse_url()`,
+`safe_parse_urls()`, the `get_*()` accessors, `canonical_join()`, and
+`resolve_url()`.
+
+## The canonical cases
+
+### Encoded unreserved bytes (`%41%42`)
+
+`%41%42` is the percent-encoding of the ASCII letters `AB` — both *unreserved*
+bytes. RFC 3986 §6.2.2.2 says unreserved percent-encodings should be decoded to
+their literal form; WHATWG preserves them.
+
+```{r unreserved}
+get_path("http://example.com/%41%42", url_standard = "rfc3986")
+get_path("http://example.com/%41%42", url_standard = "whatwg")
+```
+
+### Encoded reserved bytes (`%2F`)
+
+`%2F` is an encoded `/` — a *reserved* byte. Neither standard decodes it into a
+path-separating slash (that would change the path structure), so it stays
+encoded under both; only the hex case is canonicalized.
+
+```{r reserved}
+get_path("http://example.com/a%2Fb", url_standard = "rfc3986")
+get_path("http://example.com/a%2fb", url_standard = "whatwg")
+```
+
+### Whole-number IPv4 (`2130706433`)
+
+`2130706433` is the 32-bit integer form of `127.0.0.1`. WHATWG coerces it to a
+dotted-decimal address; RFC 3986 has no such rule, so it is treated as a
+registered name — but a diagnostic fires under **both** standards so a caller
+can tell the host was a numeric shorthand.
+
+```{r ipv4}
+get_host("http://2130706433/", url_standard = "whatwg")
+get_host_type("http://2130706433/", url_standard = "whatwg")
+get_url_diagnostics("http://2130706433/", url_standard = "rfc3986")
+```
+
+## Diagnostics are facts, not policy
+
+`url_standard` also unlocks three companion helpers. They **require** a
+selector and error without one — a host type, a diagnostic set and a
+special-scheme classification are all functions of the profile, so there is no
+profile-neutral answer they could return (ADR 0015). Importantly, they never
+widen the parse result shape: metadata is surfaced only through these helpers,
+never as new columns or fields.
+
+```{r helpers}
+get_host_type("http://example.com/", url_standard = "whatwg")
+get_scheme_class(c("http://a/", "ftps://a/"), url_standard = "whatwg")
+get_url_diagnostics("http://0x7f.1/", url_standard = "whatwg")
+```
+
+A diagnostic describes a *shape* of the input; it does not decide what to do
+about it. A link-graph builder can ignore `ipv4-*` tokens when computing keys,
+while an SSRF/allowlist guard can reject any host that carries one. Because they
+are facts, the same token fires under both standards.
+
+## Ports and backslashes
+
+`port_handling` controls whether the port appears in `clean_url`. It is a
+standalone editorial knob (independent of `url_standard`), but under `"whatwg"`
+its `"keep"` value elides a port that matches its special scheme's default.
+
+```{r ports}
+get_clean_url("http://example.com:80/p", port_handling = "keep")
+get_clean_url("http://example.com:80/p", port_handling = "keep",
+              url_standard = "whatwg")
+get_clean_url("http://example.com:8080/p", port_handling = "keep",
+              url_standard = "whatwg")
+```
+
+Under `"whatwg"`, a literal backslash is recognized as a path separator for the
+WHATWG-special schemes (`http`/`https`/`ftp`), as browsers do. `%5C` is never
+treated as a separator, and `"rfc3986"` leaves backslashes inert.
+
+```{r backslash}
+get_clean_url("http://example.com/a\\b", url_standard = "whatwg")
+get_clean_url("http://example.com/a\\b", url_standard = "rfc3986")
+```
+
+## Resolving references
+
+`resolve_url()` turns a relative link and a base URL into an absolute URL, then
+canonicalizes the result with the same machinery, so `url_standard` and the
+other options flow straight through.
+
+Resolution itself is one of the axes the selector governs. Under `"rfc3986"` —
+and under the default `NULL` — the merge is RFC 3986 §5 exactly.
+
+```{r resolve}
+resolve_url("../g", "http://a/b/c/d;p?q")
+resolve_url("//other.example/p", "http://a/b/c")
+resolve_url(c("g", "../h"), "http://a/b/c/")
+```
+
+### What `"whatwg"` changes
+
+Under `"whatwg"` the WHATWG URL Standard's reference-*parsing* rules run before
+the merge. Four of them are visible:
+
+```{r resolve-whatwg}
+# 1. A reference carrying the base's OWN special scheme is relative, not
+#    absolute -- so this is not read as the absolute `http:g`.
+resolve_url("http:g", "http://a/b/c/d", url_standard = "whatwg")
+
+# 2. Under a special base, `\` reads as `/`.
+resolve_url("..\\g", "http://a/b/c/d", url_standard = "whatwg")
+
+# 3. A leading run of slashes-or-backslashes introduces an authority.
+resolve_url("///g", "http://a/b/c/d", url_standard = "whatwg")
+
+# 4. Leading and trailing C0-or-space is stripped before the reference is read.
+resolve_url("  \n g ", "http://a/b/c/d", url_standard = "whatwg")
+```
+
+### Which colon starts a scheme
+
+One rule is not WHATWG's — it is the RFC's own grammar, so it applies under
+**both** named selectors. Deciding whether a reference is absolute means
+deciding whether the text before its first colon is a scheme, and RFC 3986
+§3.1's production is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`. The looser
+group in the RFC's Appendix B parser, which the appendix itself describes as
+non-validating, admits things that are not schemes — and §4.2 names the
+consequence: a relative path that merely *contains* a colon gets read as
+absolute and the base is thrown away.
+
+```{r resolve-scheme}
+# `10.0.0.7` cannot be a scheme, so this is a relative path.
+resolve_url("10.0.0.7:8080/foo.html", "file:///some/dir/bar.html",
+            url_standard = "rfc3986")
+
+# The same tightening cuts the other way for a BASE: a base whose scheme
+# existed only under the loose group is not an absolute URL, so there is
+# nothing to resolve against.
+resolve_url("g", "10.0.0.7:8080/dir/x", url_standard = "rfc3986")
+```
+
+`url_standard = NULL` keeps the loose group. Tightening it there would move
+frozen bytes rather than merely improve them, and the freeze governs whether
+output may *move*, not whether it is right — so the fix ships on the two
+selectors that claim a standard, and the one that claims none is left alone.
+
+```{r resolve-null-frozen}
+resolve_url("g", "10.0.0.7:8080/dir/x")
+```
+
+### Asking for the standard string instead
+
+`resolve_url()` returns `clean_url` by default, which drops credentials and the
+fragment — a cleaning product, not a standard serialization. When you need the
+surface RFC 3986 §5.4's own worked examples are reproducible on, ask for it:
+
+```{r resolve-serialized}
+resolve_url("../g", "http://u:pw@a/b/c/d?q#f", url_standard = "whatwg")
+resolve_url("../g", "http://u:pw@a/b/c/d?q#f", url_standard = "whatwg",
+            output = "serialized")
+```
+
+`output = "serialized"` requires an explicit `url_standard`, since `NULL`
+selects no standard to serialize *to*.
+
+## Migration notes
+
+- **Pin `url_standard = "whatwg"`** for WHATWG-aligned link identity on the
+  governed axes (path percent/dot handling, the host IPv4/reg-name model). This
+  collapses a hand-tuned multi-knob profile down to one argument. It is
+  deliberately narrower than "browser-faithful": IDNA rendering and query
+  handling are not governed by the selector.
+- **`path_encoding = "keep"` is a stopgap, not a profile.** If you adopted
+  `path_encoding = "keep"` earlier to stop `%2F` reserved-byte false joins, keep
+  in mind it is a collision fix, not behavior-equivalent to `"whatwg"`: it
+  leaves `%41%42` encoded but does not resolve encoded dot segments and does not
+  change host numeric parsing. Prefer the selector once you can.
+
+## What the selector does not govern
+
+The selector governs path percent/dot handling, the host IPv4/reg-name model,
+`case_handling`, default-port elision (under `port_handling = "keep"`), and
+WHATWG backslash recognition. It does **not** govern IDNA rendering
+(`host_encoding`) or query handling (owned by the query options).
+
+It also does not decide **which schemes get parsed at all** — that is a separate
+axis, `scheme_acceptance`. The default `"web"` admits only the curated
+`http`/`https`/`ftp`/`ftps`/`file` allowlist; `"general"` additionally accepts
+non-special schemes, including opaque-path ones such as `mailto:`, `data:` and
+`tel:`. The two axes compose: `scheme_acceptance` decides what gets parsed,
+`url_standard` decides how the result is interpreted.
+
+```{r acceptance}
+# Rejected by the default "web" allowlist ...
+get_host("mailto:jane@example.com", url_standard = "whatwg")
+
+# ... parsed under "general".
+get_host("mailto:jane@example.com", url_standard = "whatwg",
+         scheme_acceptance = "general")
+```
+
+A `mailto:` URL is a WHATWG **opaque path**, which by definition has no
+authority, so the parse result reports none — the recipient stays in `path`. The
+accessor above is doing something different and deliberate: extracting the
+web-y facts *about* an address. The two answers are allowed to differ.
+
+```{r opaque}
+safe_parse_urls("mailto:jane@example.com", url_standard = "whatwg",
+                scheme_acceptance = "general")[, c("host", "user", "path")]
+```
+
+## Conformance posture
+
+`rurl`'s conformance claims are measured, frozen and regenerable — the studies
+live in [`analysis/`](https://gitlab.com/bart-turczynski/rurl/-/tree/main/analysis),
+with the harnesses in `inst/bench/`.
+
+**WHATWG.** Against the spec's own conformance suite (web-platform-tests
+`urltestdata.json`), at `scheme_acceptance = "general"` the `"whatwg"` profile
+accepts all **336** success cases with full component parity — scheme,
+username, password, host, port, path, query and fragment — and correctly
+rejects all **202** failure cases: **538/538**. At the default `scheme_acceptance = "web"` the same corpus
+scores 176 accepted, all at full parity, plus the same 202 rejections; the 160
+difference is the ADR 0004 allowlist declining non-web schemes before the
+grammar is consulted, not a conformance miss. Against `adaR` (the
+Ada C++ WHATWG reference) over a 336-input adversarial corpus, it differs on
+**two rows**, and neither is a parsing disagreement: one is punycode-vs-Unicode
+*presentation* (ADR 0002 — reachable through `host_encoding`), and one is the
+held `scheme_policy = "require"` axis. On the rows where both parsers accept,
+scheme, port and path agreement are all 1.000.
+
+**RFC 3986.** Over the 257-row audited conformance fixture, the `"rfc3986"`
+profile matches the standard on **164** rows and departs on **93** — 81 where it
+rejects what the RFC admits (all of them the ADR 0004 host/authority gate; the
+closed scheme set contributes none) and 12 where it accepts what the RFC does not (ADR 0002 Unicode
+hosts, ADR 0011 readable paths). Every one of the 93 cites the ADR or ticket
+that owns it; none is accidental. A hand-authored, two-sided probe set covering
+the grammar and normalization rules passes 32/32 in both directions, with five
+deliberate departures pinned *outside* the score so strictness cannot inflate a
+conformance number.
+
+Two boundaries keep that honest rather than triumphal:
+
+- The WPT fixture behind that 336/336 keeps only **absolute** URLs (rows with a
+  null base), so the figure says **nothing** about base-relative resolution. It
+  does now cover every scheme the suite exercises, including opaque, `ws:` and
+  `wss:`. Base-relative resolution is measured **separately**, over the
+  complementary 274 base-carrying rows of the same upstream file: **247 exact,
+  27 enumerated differences** (18 Windows drive letters under `file:`, 5 a
+  recomposition seam, 4 absolute references whose deviation is in absolute
+  parsing). **The two are disjoint populations and are never added together** —
+  there is no combined rate, and the 247/274 split is a known-differ set for
+  regression tracking, not a conformance rate.
+- The `"whatwg"` profile is WHATWG on the axes it governs — **not** a full
+  UTS-46 host mapping. Ligatures, circled digits and zero-width code points pass
+  through unmapped (ADR 0002).
+
+The residual WHATWG deviations are both dials rather than defects: each is
+reachable from a documented argument, which is the design's whole claim.

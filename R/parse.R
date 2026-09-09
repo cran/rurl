@@ -11,28 +11,38 @@
 #'   \code{\link{safe_parse_urls}}.
 #' @param protocol_handling A character string specifying how to handle
 #'   protocols. Defaults to "keep".
+#'   Regardless of this option, rurl only processes authority-based URLs whose
+#'   scheme is one of http, https, ftp, or ftps; a scheme-bearing input with any
+#'   other scheme (e.g. \code{mailto:}, \code{tel:}, \code{ws:}) yields
+#'   \code{parse_status = "error"}. Scheme inference (below) also requires the
+#'   input to be host-shaped: a scheme-less string that is not a host (e.g.
+#'   \code{"asdfghjkl"}, \code{"12345"}, \code{"/path"}) or is a non-canonical
+#'   IP literal (integer/hex/octal/short forms, or leading-zero octets like
+#'   \code{"192.168.010.1"}) is rejected as \code{"error"} rather than having a
+#'   scheme fabricated for it.
 #'   \itemize{
-#'     \item{"keep": If a scheme exists (http, https, ftp, ftps), it's used. If
-#'     no scheme, "http://" is added.}
-#'     \item{"none": If a scheme exists, it's used. If no scheme, then no
-#'     scheme is used (scheme component will be NA).}
+#'     \item{"keep": If a supported scheme exists (http, https, ftp, ftps), it's
+#'     used. If no scheme and the input is host-shaped, "http://" is added;
+#'     otherwise the input is not a URL and yields \code{"error"}.}
+#'     \item{"none": If a supported scheme exists, it's used. If no scheme, then
+#'     no scheme is used (scheme component will be NA).}
 #'     \item{"strip": Any existing scheme is removed (scheme component will be
 #'     NA).}
 #'     \item{"http": The scheme is forced to be "http".}
 #'     \item{"https": The scheme is forced to be "https".}
 #'   }
 #' @param www_handling A character string specifying how to handle "www"
-#'   and "www[number]" prefixes in the host. Defaults to "none".
+#'   and `www[number]` prefixes in the host. Defaults to "none".
 #'   \itemize{
 #'     \item{"none": (Default) Leaves the host's www prefix (or lack thereof)
 #'     untouched.}
-#'     \item{"strip": Removes any "www." or "www[number]." prefix.}
+#'     \item{"strip": Removes any "www." or `www[number].` prefix.}
 #'     \item{"keep": Ensures the host starts with "www.". If it has
-#'     "www[number].", it's normalized to "www.". If no www prefix, "www." is
+#'     `www[number].`, it's normalized to "www.". If no www prefix, "www." is
 #'     added. An empty input host remains empty.}
 #'     \item{"if_no_subdomain": If the host is a bare registered domain (e.g.,
 #'     "example.com"), "www." is added. If the host already has a "www." or
-#'     "www[number]." prefix, it is normalized to "www." (e.g.,
+#'     `www[number].` prefix, it is normalized to "www." (e.g.,
 #'     "www1.example.com" becomes "www.example.com"; "www1.sub.example.com"
 #'     becomes "www.sub.example.com"). If a non-www subdomain exists (e.g.,
 #'     "sub.example.com" or the normalized "www.sub.example.com"), the host is
@@ -71,9 +81,16 @@
 #'     (case-insensitive).}
 #'   }
 #' @param path_normalization How to normalize path structure. Defaults to
-#' "none".
+#' "none". rurl owns dot-segment resolution: the path is read from the input
+#' verbatim (never from a pre-normalized path), so \code{"none"} preserves
+#' \code{.} / \code{..} segments (\code{/a/../b} stays \code{/a/../b}) and only
+#' the settings below change them. Resolution follows RFC 3986 section 5.2.4 and
+#' acts on \emph{literal} \code{.}/\code{..} segments only — a percent-encoded
+#' \code{\%2e} is a normal path byte, never a dot segment, so it is never
+#' treated as traversal.
 #'   \itemize{
-#'     \item{"none": (Default) No normalization.}
+#'     \item{"none": (Default) No normalization; dot and slash structure is
+#'     preserved exactly as written.}
 #'     \item{"collapse_slashes": Collapse duplicate slashes in the path.}
 #'     \item{"dot_segments": Resolve . and .. segments per RFC 3986.}
 #'     \item{"both": Apply both collapse_slashes and dot_segments.}
@@ -90,18 +107,45 @@
 #' @param host_encoding How to present the host in `clean_url`. Defaults to
 #' "keep".
 #'   \itemize{
-#'     \item{"keep": Leave host as parsed by curl (may preserve original case).}
+#'     \item{"keep": Leave the host as parsed (may preserve original case).}
 #'     \item{"idna": Convert Unicode host labels to Punycode (IDNA) for the
 #'     cleaned URL.}
 #'     \item{"unicode": Decode Punycode labels to Unicode for the cleaned URL.}
 #'   }
-#' @param path_encoding How to handle percent-encoding in the path for
-#' `clean_url`. Defaults to "keep".
+#'   Under `url_standard = "whatwg"` every value renders the UTS-46-mapped
+#'   host, because mapping is part of WHATWG host parsing rather than a
+#'   feature of the `idna` dial (`BÜCHER.example` presents as
+#'   `bücher.example`; RUL-002). There `"keep"` preserves only whether the
+#'   input was written as an A-label (`xn--...`), so `get_host()` and
+#'   `get_domain()` agree on the same row. `"rfc3986"` and `NULL` are
+#'   unaffected.
+#' @param path_encoding How to present the path percent-encoding in `clean_url`
+#' — the readable-vs-browser rendering choice (the path analog of
+#' `host_encoding`). Defaults to "keep". This is an orthogonal presentation
+#' knob: it is independent of `url_standard` and layers on top of any profile
+#' (e.g. `url_standard = "whatwg", path_encoding = "encode"` emits the
+#' WHATWG-parsed path in browser form), exactly like `host_encoding`. Only
+#' "keep" preserves a profile's canonical identity path verbatim; "encode" and
+#' "decode" are presentation forms that may re-encode or decode reserved octets
+#' (so `%2F` may fold to a path-separating `/`), independent of whether a
+#' profile is set.
 #'   \itemize{
-#'     \item{"keep": Leave the path percent-encoding untouched.}
-#'     \item{"encode": Normalize by decoding first, then percent-encoding each
-#'     segment (slashes preserved).}
-#'     \item{"decode": Percent-decode UTF-8 sequences in the path.}
+#'     \item{"keep": Leave the path percent-encoding untouched (the path is
+#'     preserved as written in the URL, so `%2F` stays `%2F` rather than
+#'     decoding into a path-separating `/`). With no `url_standard`, rurl keeps
+#'     its historical RFC-style percent-hex case canonicalization, so `%2f`
+#'     becomes `%2F`. Under `url_standard = "rfc3986"`, the profile's RFC 3986
+#'     §6.2.2.2 normalization applies: a triplet encoding an unreserved byte is
+#'     decoded, every other triplet stays encoded with uppercased hex, so
+#'     `%7E` becomes `~` while `%2F` stays `%2F`. Under
+#'     `url_standard = "whatwg"`, existing percent-triplet
+#'     spelling is preserved byte-for-byte. Use "encode" to additionally
+#'     normalize which bytes are encoded.}
+#'     \item{"encode": The browser/percent-encoded rendering. Decodes the path
+#'     first, then percent-encodes each segment (slashes preserved), so a
+#'     readable non-ASCII path is emitted in its percent-encoded UTF-8 form.}
+#'     \item{"decode": The readable rendering. Percent-decodes UTF-8 sequences
+#'     in the path, so a percent-encoded segment is shown as readable text.}
 #'   }
 #' @param subdomain_levels_to_keep An integer or NULL. Determines how many
 #' levels of subdomains are kept,
@@ -120,6 +164,187 @@
 #'          'www.three.two.one.example.com' (post www_handling) becomes
 #'          'www.one.example.com'.}
 #'   }
+#' @param query_handling A character string controlling whether (and how) the
+#' query string is included in `clean_url`. Defaults to "drop", which preserves
+#' the historical query-free `clean_url`. The raw `query` result field is never
+#' affected by this option — it always reports the faithful original query.
+#'   \itemize{
+#'     \item{"drop": (Default) `clean_url` carries no query, exactly as before.}
+#'     \item{"filter": Keep contentful params, dropping known trackers via a
+#'     built-in denylist (e.g. `utm_*`, `fbclid`, `gclid`). `params_drop`
+#'     extends the denylist; `params_keep` rescues names (winning over both the
+#'     denylist and empty-dropping).}
+#'     \item{"allow": Keep only params whose names match `params_keep`; all
+#'     others are dropped. Here `params_keep` is an inclusion criterion only,
+#'     not an empty-rescue.}
+#'     \item{"keep": Keep every param, re-encoded into canonical form (not the
+#'     verbatim original — that stays on the `query` field).}
+#'   }
+#'   In every non-"drop" mode the surviving query is re-encoded canonically
+#'   (uppercase percent-hex, spaces as `%20`) and appended after the path. The
+#'   query is intentionally EXEMPT from `case_handling` (query values are
+#'   case-sensitive — tokens, IDs, signatures), so under
+#'   `case_handling = "lower"` or `"upper"` the `clean_url` is no longer
+#'   uniformly cased: scheme/host/path fold but the query keeps its original
+#'   case. Because `clean_url` is the \code{\link{canonical_join}} key, any
+#'   non-"drop" mode also brings the query into that join key (so `?id=1` and
+#'   `?id=2` stop collapsing, while `utm`-only differences still collapse under
+#'   "filter").
+#' @param params_keep Character vector of parameter-name globs (only `*` is
+#'   special), or `NULL` (default). In "filter" mode this is the rescue list; in
+#'   "allow" mode it is the allowlist. Ignored in "drop"/"keep".
+#' @param params_drop Character vector of parameter-name globs to add to the
+#'   built-in denylist in "filter" mode, or `NULL` (default). Ignored in
+#'   "drop"/"allow"/"keep".
+#' @param sort_params Logical (default `FALSE`). When `TRUE`, surviving params
+#'   are stably sorted by decoded key. Active in "filter"/"allow"/"keep".
+#' @param empty_param_handling One of "keep" (default) or "drop". "drop" removes
+#'   empty-valued params (e.g. `?ref=`), except those rescued by `params_keep`
+#'   in "filter" mode.
+#' @param params_case_sensitive Logical (default `FALSE`). Controls whether the
+#'   denylist and `params_keep`/`params_drop` matching is case-sensitive.
+#' @param decode_plus Logical (default `FALSE`). When `TRUE`, `+` in query
+#'   values is treated as a space (HTML-form decoding) before percent-decoding.
+#'   `FALSE` keeps `+` literal (RFC 3986 generic behavior).
+#' @param port_handling A character string controlling whether the port
+#' appears in `clean_url`. Defaults to "exclude", today's only historical
+#' behavior. This knob is standalone and standard-independent (editorial, like
+#' `www_handling`) -- `url_standard` never governs whether it may be set.
+#'   \itemize{
+#'     \item{"exclude": (Default) The port never appears in `clean_url`.}
+#'     \item{"strip_all": Explicit alias of "exclude".}
+#'     \item{"keep": Include the syntactic port when present, including a
+#'     default port under `url_standard = "whatwg"`. This is an explicit
+#'     non-parity override for callers that need the input's port spelling.}
+#'     \item{"strip_default": Keep only non-default ports (using the same
+#'     scheme-default table), independent of `url_standard`. Default-ness is
+#'     judged on the scheme the input was **parsed** with, never on the scheme
+#'     `protocol_handling` renders: `http://example.com:443/a` under
+#'     `protocol_handling = "https"` keeps `:443`, and `http://example.com:80/a`
+#'     drops `:80` (RFC 3986 §6.2.3; WHATWG URL Standard port state; RUL-016).
+#'     This is the value `profile = "seo"` pins.}
+#'   }
+#' @param scheme_policy Controls whether scheme-less, host-shaped input is
+#' *accepted* (an input-acceptance axis, distinct from `protocol_handling`,
+#' which only controls how the scheme is *presented*, and from `url_standard`,
+#' which controls interpretation). Defaults to "infer".
+#'   \itemize{
+#'     \item{"infer": (Default) Fabricate `http://` for scheme-less host-shaped
+#'     input (e.g. `example.com` parses as `http://example.com`), a
+#'     browser-omnibox-style affordance. This is the historical behavior.}
+#'     \item{"require": Reject scheme-less input — a scheme-less host-shaped
+#'     value becomes `parse_status = "error"` rather than gaining a fabricated
+#'     scheme. Use this for a strict, pure-parser posture. Note this governs
+#'     only bare host input; scheme-relative `//host` input is governed
+#'     separately by `scheme_relative_handling`.}
+#'   }
+#' @param scheme_acceptance Which scheme *tokens* may enter parsing (a
+#' scheme-acceptance axis, distinct from `scheme_policy`, which governs
+#' scheme-*less* input, and from `url_standard`, which governs interpretation).
+#' Defaults to "web".
+#'   \itemize{
+#'     \item{"web": (Default) Only the curated web-scheme allowlist
+#'     (`http`/`https`/`ftp`/`ftps`/`file`) is admitted; a scheme-bearing input
+#'     outside it is `parse_status = "error"`. This is the historical,
+#'     byte-for-byte compatible behavior.}
+#'     \item{"general": Admit any syntactically valid scheme token and parse
+#'     opaque (`mailto:x`), non-special (`foo://host`), and RFC-generic URLs.
+#'     Requires an explicit `url_standard` (`"rfc3986"` or `"whatwg"`), which
+#'     decides the interpretation; `general` with `url_standard = NULL` is an
+#'     error. Non-special / opaque hosts receive no www-stripping, no domain/TLD
+#'     derivation, and are never run through the IDNA/punycode helpers.
+#'     A non-special scheme with no `//` is an *opaque path*: it has no
+#'     authority, so `host`, `user`, `port` and the `domain`/`tld` columns are
+#'     all `NA` and the entire remainder is the `path` (`query`/`fragment` are
+#'     still split off). This includes `mailto:` — the recipient's `@` never
+#'     re-triggers authority parsing. To decompose a `mailto:` recipient, use
+#'     the accessors (`get_host()` / `get_domain()` / `get_user()`, ADR 0012 D7)
+#'     or `get_mailto_recipients()`; those deliberately return a recipient's
+#'     parts where this table presents `NA`, because a recipient domain is
+#'     extraction metadata, not the URL's authority.}
+#'   }
+#'   Note that `file:` is admitted under *both* values, including the default.
+#'   A `file:` URL denotes local-filesystem access, and one with a non-empty
+#'   host (`file://server/share/x`) is a UNC path on Windows, so dereferencing
+#'   it reaches a remote SMB share. rurl parses `file:` URLs; it never opens
+#'   them. Restricting schemes before anything dereferences them is the
+#'   caller's job — see `SECURITY.md`.
+#' @param url_standard Optional top-level standard profile: `NULL` (default),
+#'   `"rfc3986"`, or `"whatwg"`. With `NULL` the behavior is exactly what the
+#'   individual low-level options select (fully backward compatible). When set,
+#'   it selects a coherent set of standard-conformant behaviors for the axes it
+#'   governs — path percent/dot handling, the host IPv4/reg-name model, and
+#'   `case_handling` — so callers do not have to hand-assemble the low-level
+#'   knobs. Passing a governed low-level knob (`path_normalization` or
+#'   `case_handling`) with a value the selected
+#'   profile would not choose is an error; passing the value the profile would
+#'   pick is accepted (only `case_handling = "lower_host"` is accepted under a
+#'   selector — `"keep"`, `"lower"`, and `"upper"` all conflict, since `"lower"`
+#'   also lowercases the path, which neither standard sanctions). Added as the
+#'   last argument so existing positional calls keep their meaning; always
+#'   pass it by name. Under `"whatwg"` the selector additionally recognizes a
+#'   literal backslash as a path separator for WHATWG-special schemes
+#'   (`http`/`https`/`ftp`) and nulls default ports in parse output; use
+#'   `port_handling = "strip_default"` for spec-style clean URL port rendering.
+#'   See \code{\link{resolve_url}} for `url_standard`-governed
+#'   reference resolution. The selector does **not** govern whether
+#'   `port_handling` may be set (it is a standalone editorial knob), nor does it
+#'   govern `path_encoding` (an orthogonal path-presentation knob that layers
+#'   on any profile), IDNA rendering, or query handling.
+#' @param engine Optional \pkg{pslr} engine controlling which Public Suffix List
+#'   backs domain / TLD / subdomain extraction: `NULL` (default) resolves
+#'   against \pkg{pslr}'s session-global default list — exactly the historical
+#'   behavior — while a `pslr::psl_engine()` snapshot resolves against that
+#'   specific list, per request, without mutating any global state (never call
+#'   `pslr::psl_use()` for this). Use it to pin a particular list version or to
+#'   load an alternate list via `pslr::psl_engine(source = "path", path = ...)`.
+#'   **Process-local:** an engine holds a C++ external pointer that does **not**
+#'   serialize across R sessions or parallel workers — build it in the process
+#'   that uses it; never cache it to disk or send it to a worker (rebuild one
+#'   per process instead). Only the domain-derived outputs (`domain`, `tld`,
+#'   and the subdomain-trimmed host / `clean_url`) depend on it.
+#' @param profile Optional named profile bundling several knobs at once: `NULL`
+#'   (default; behaves exactly as the individual arguments select, fully
+#'   backward compatible), `"browser"`, `"whatwg"`, `"rfc-syntax"`, `"seo"`, or
+#'   the `"seo"` alias `"canonical"`. A profile is **separate** from
+#'   `url_standard` (it bundles acceptance, interpretation, leniency, and
+#'   canonicalization together) and expands only into arguments you did not
+#'   supply explicitly — an explicit argument always overrides the profile.
+#'   `"browser"` is a browser-*like* fix-up posture (http-prepending; not
+#'   Chrome-faithful); `"whatwg"` is the absolute-URL no-base posture that
+#'   *rejects* scheme-less input (unlike a bare `url_standard = "whatwg"`);
+#'   `"rfc-syntax"` is RFC 3986 generic syntax as parsing, not normalization
+#'   (case and dot-segments are preserved); `"seo"`/`"canonical"` is rurl's
+#'   origin-cleaning intent — a **lossy policy projection of a WHATWG-parsed
+#'   URL** (ADR 0017), which claims no resource equivalence:
+#'   `url_standard = "whatwg"` underneath (which also resolves `.`/`..` folder
+#'   segments), https, a Unicode host regardless of the input spelling,
+#'   strip www / trailing slash / index page, drop the whole query, and drop
+#'   a **default** port only (`port_handling = "strip_default"`: a
+#'   non-default port names a different origin and survives). Inspect
+#'   the resolved bundle with
+#'   \code{\link{url_profile}}. Also accepted by \code{\link{canonical_join}}
+#'   (forwarded through its \code{...}).
+#' @param credential_handling How `clean_url` treats a URL whose parsed
+#'   authority carried a userinfo delimiter (`user@`, `user:password@`, a bare
+#'   `@`, or a repeated `@`). Defaults to "strip". A policy dial on the clean
+#'   surface (ADR 0017, mutation-table row 12; RUL-001), not a standards axis:
+#'   it composes with every `url_standard`, including `NULL`, and never
+#'   touches the `user` / `password` columns, `parse_status`, the diagnostics,
+#'   \code{\link{serialize_url}} or \code{\link{get_url_key}}.
+#'   \itemize{
+#'     \item{"strip": (Default) The userinfo is dropped and the rest of the
+#'     URL is emitted, exactly as before this argument existed.}
+#'     \item{"reject": `clean_url` is `NA` for such a row. RFC 3986 section
+#'     3.2.1 deprecates the `user:password` form and lets an application
+#'     reject it; sections 7.5 and 7.6 describe the credential leak and the
+#'     `https://example.com@evil.example/` semantic attack a silently
+#'     collapsed clean URL would hide. Use this when a cleaned URL that
+#'     \emph{looks} like the credential-free original would be misleading.}
+#'   }
+#'   There is no "keep": \code{\link{serialize_url}} already preserves
+#'   credentials under both standards, and \code{\link{format_url}} redacts
+#'   them for display.
 #' @return A named list with the following components:
 #'   \itemize{
 #'     \item `original_url`: The original URL string provided.
@@ -128,31 +353,71 @@
 #'     empty after processing.
 #'     \item `port`: The port number.
 #'     \item `path`: The path component (e.g., "/path/to/resource").
-#'     \item `query`: The query string (e.g., "name=value").
-#'     \item `fragment`: The fragment identifier (e.g., "section").
-#'     \item `user`: The user name for authentication.
-#'     \item `password`: The password for authentication.
+#'     \item `query`: The query string (e.g., "name=value"); never
+#'     percent-decoded. Under `url_standard = "whatwg"` it carries the
+#'     standard's percent-encoded spelling (the query percent-encode set is
+#'     applied, so a literal space reports as "%20"); under
+#'     `url_standard = "rfc3986"` or no selector it is the raw source spelling,
+#'     preserved byte-for-byte exactly as written in the URL (a bare key such
+#'     as "flag" stays "flag", not "flag="). A present-but-empty query (e.g.
+#'     from a trailing "?") is reported as NA.
+#'     \item `fragment`: The fragment identifier (e.g., "section"); never
+#'     percent-decoded, with the same two-branch contract as `query` (the
+#'     fragment percent-encode set is applied under `url_standard = "whatwg"`,
+#'     so a double-quote inside the fragment reports as "%22"). Empty is
+#'     reported as NA.
+#'     \item `user`: The user name for authentication; never percent-decoded.
+#'     Under `url_standard = "whatwg"` it carries the standard's percent-encoded
+#'     spelling (the userinfo percent-encode set is applied, so
+#'     "http://a^b@host/" reports "a%5Eb"); under `url_standard = "rfc3986"` or
+#'     no selector it is the raw source spelling, exactly as written in the URL.
+#'     Empty is reported as NA.
+#'     \item `password`: The password for authentication, with the same
+#'     encoding contract as `user` (so a ":" inside a WHATWG password is
+#'     reported as "%3A"). Empty is reported as NA.
 #'     \item `domain`: The registered domain name (e.g., "example.com"). NA if
 #'     host is an IP, empty, or derivation fails.
 #'     \item `tld`: The top-level domain (e.g., "com"). NA if host is an IP,
 #'     empty, or derivation fails.
+#'     \item `domain_ascii`, `domain_unicode`: The registered domain in both
+#'     canonical spellings, independent of `host_encoding`. For an
+#'     internationalized domain, `domain_ascii` is the Punycode/A-label form
+#'     (e.g., "xn--mnchen-3ya.de") and `domain_unicode` the decoded Unicode form
+#'     (e.g., "münchen.de"); for an ASCII-only domain the two are equal.
+#'     Unlike `domain` (which follows `host_encoding`, a rendering choice),
+#'     these are stable identity keys — a Unicode host and its A-label share
+#'     one `domain_ascii` — so consumers can build an encoding-independent key
+#'     from a single parse. NA under the same conditions as `domain`.
+#'     \item `tld_ascii`, `tld_unicode`: The public suffix (TLD) in both
+#'     canonical spellings, the `tld` analogue of `domain_ascii`/
+#'     `domain_unicode`. NA under the same conditions as `tld`.
 #'     \item `is_ip_host`: Logical, TRUE if the host is an IP address.
 #'     \item `clean_url`: A normalized canonical key reconstructed from
-#'     scheme, host, and path only, after processing and with case handling
-#'     applied. Port, query, fragment, and userinfo are intentionally
+#'     scheme, host, and path, after processing and with case handling
+#'     applied. The query is included only when `query_handling != "drop"`
+#'     (the default is "drop", so by default the query is excluded); when
+#'     included it is filtered/canonicalized per the query options and appended
+#'     case-unfolded. The port is included only when
+#'     `port_handling != "exclude"` (the default is "exclude", so by default
+#'     the port is excluded, as before); fragment and userinfo are always
 #'     excluded (use the dedicated components above to retrieve them). With
 #'     `path_encoding = "decode"` the path is shown decoded, so `clean_url`
-#'     is human-readable rather than guaranteed URL-safe. NA if host is
-#'     empty/NA.
+#'     is human-readable rather than guaranteed URL-safe. NA on a parse error,
+#'     when the host is empty/NA except for a valid hostless `file:` URL, or
+#'     under `credential_handling = "reject"` when the authority carried a
+#'     userinfo delimiter.
 #'     \item `parse_status`: Character string indicating parsing outcome
 #'       ("ok", "ok-ftp", "ok-scheme-relative", "error", "warning-no-tld",
-#'       "warning-invalid-tld", "warning-public-suffix").
+#'       "warning-invalid-tld", "warning-public-suffix", "warning-userinfo").
+#'       "warning-userinfo" marks a scheme-less input carrying userinfo (e.g.
+#'       "user@example.com"): host/domain/tld/user still resolve, but
+#'       \code{clean_url} is NA (rurl will not fabricate a canonical URL from an
+#'       ambiguous, email-shaped, scheme-less string).
 #'   }
 #'   Returns `NULL` if the URL is fundamentally unparseable (e.g., NA, empty)
 #'   or uses a disallowed scheme.
 #' @seealso \code{\link{safe_parse_urls}}
 #' @importFrom utils tail
-#' @importFrom curl curl_parse_url curl_escape curl_unescape
 #' @keywords internal
 #' @export
 #' @examples
@@ -208,6 +473,32 @@
 #'   www_handling = "keep",
 #'   subdomain_levels_to_keep = 1
 #' )
+#' # Query handling: keep contentful params, drop known trackers.
+#' safe_parse_url(
+#'   "http://example.com/watch?v=abc&utm_source=nl",
+#'   query_handling = "filter"
+#' )$clean_url
+#' # -> "http://example.com/watch?v=abc"
+#' # params_keep is a RESCUE in "filter" (wins over the denylist) ...
+#' safe_parse_url(
+#'   "http://example.com/?utm_source=nl&id=1",
+#'   query_handling = "filter", params_keep = "utm_source"
+#' )$clean_url
+#' # -> "http://example.com/?utm_source=nl&id=1"
+#' # ... but an ALLOWLIST in "allow" (only listed names survive).
+#' safe_parse_url(
+#'   "http://example.com/?a=1&id=2",
+#'   query_handling = "allow", params_keep = "id"
+#' )$clean_url
+#' # -> "http://example.com/?id=2"
+#' # "allow" empty-handling asymmetry: params_keep does NOT rescue empties, so
+#' # an allowed empty param still drops under empty_param_handling = "drop".
+#' safe_parse_url(
+#'   "http://example.com/?id=&keep=1",
+#'   query_handling = "allow", params_keep = c("id", "keep"),
+#'   empty_param_handling = "drop"
+#' )$clean_url
+#' # -> "http://example.com/?keep=1"
 safe_parse_url <- function(url,
                            protocol_handling = c(
                              "keep", "none", "strip", "http", "https"
@@ -229,7 +520,25 @@ safe_parse_url <- function(url,
                            ),
                            subdomain_levels_to_keep = NULL,
                            host_encoding = c("keep", "idna", "unicode"),
-                           path_encoding = c("keep", "encode", "decode")) {
+                           path_encoding = c("keep", "encode", "decode"),
+                           query_handling = c(
+                             "drop", "filter", "allow", "keep"
+                           ),
+                           params_keep = NULL,
+                           params_drop = NULL,
+                           sort_params = FALSE,
+                           empty_param_handling = c("keep", "drop"),
+                           params_case_sensitive = FALSE,
+                           decode_plus = FALSE,
+                           port_handling = c(
+                             "exclude", "keep", "strip_default", "strip_all"
+                           ),
+                           scheme_policy = c("infer", "require"),
+                           scheme_acceptance = c("web", "general"),
+                           url_standard = NULL,
+                           engine = NULL,
+                           profile = NULL,
+                           credential_handling = c("strip", "reject")) {
   # Enforce scalar input to keep behavior explicit and predictable
   if (length(url) != 1) {
     stop(
@@ -239,8 +548,31 @@ safe_parse_url <- function(url,
     )
   }
 
+  # url_standard (RURL-eqzkkohm): validate, then conflict-check the governed
+  # low-level knobs the caller EXPLICITLY supplied (missing() must be evaluated
+  # here, in the public frame). match.arg() resolves partial matches before the
+  # comparison so an abbreviated-but-compatible value is accepted.
+  url_standard <- .validate_url_standard(url_standard)
+  profile <- .validate_profile(profile)
+  # `path_encoding` is orthogonal (ADR 0011): not passed here, never conflicts.
+  # On the profile path the conflict matrix is SKIPPED: a profile authorizes its
+  # own combination (e.g. `rfc-syntax` = rfc3986 + no normalization), and the
+  # iron rule lets explicit args override. Direct (profile = NULL) calls keep
+  # ADR 0007's conflict behavior unchanged.
+  if (is.null(profile)) {
+    .check_url_standard_conflicts(url_standard, .governed_supplied(
+      path_normalization = if (missing(path_normalization)) {
+        NULL
+      } else {
+        match.arg(path_normalization)
+      },
+      case_handling =
+        if (missing(case_handling)) NULL else match.arg(case_handling)
+    ))
+  }
+
   # Validate and normalize options once (match.arg + subdomain check)
-  opts <- .parse_options(
+  po_args <- list(
     protocol_handling = protocol_handling,
     www_handling = www_handling,
     tld_source = tld_source,
@@ -251,10 +583,70 @@ safe_parse_url <- function(url,
     scheme_relative_handling = scheme_relative_handling,
     subdomain_levels_to_keep = subdomain_levels_to_keep,
     host_encoding = host_encoding,
-    path_encoding = path_encoding
+    path_encoding = path_encoding,
+    query_handling = query_handling,
+    params_keep = params_keep,
+    params_drop = params_drop,
+    sort_params = sort_params,
+    empty_param_handling = empty_param_handling,
+    params_case_sensitive = params_case_sensitive,
+    decode_plus = decode_plus,
+    port_handling = port_handling,
+    scheme_policy = scheme_policy,
+    scheme_acceptance = scheme_acceptance,
+    url_standard = url_standard,
+    engine = engine,
+    credential_handling = credential_handling
   )
+  if (!is.null(profile)) {
+    po_args <- .merge_profile_args(po_args, .resolve_profile(profile, list(
+      url_standard = url_standard,
+      scheme_acceptance =
+        if (missing(scheme_acceptance)) NULL else match.arg(scheme_acceptance),
+      scheme_policy =
+        if (missing(scheme_policy)) NULL else match.arg(scheme_policy),
+      scheme_relative_handling = if (missing(scheme_relative_handling)) {
+        NULL
+      } else {
+        match.arg(scheme_relative_handling)
+      },
+      path_normalization = if (missing(path_normalization)) {
+        NULL
+      } else {
+        match.arg(path_normalization)
+      },
+      case_handling =
+        if (missing(case_handling)) NULL else match.arg(case_handling),
+      protocol_handling =
+        if (missing(protocol_handling)) NULL else match.arg(protocol_handling),
+      www_handling =
+        if (missing(www_handling)) NULL else match.arg(www_handling),
+      trailing_slash_handling = if (missing(trailing_slash_handling)) {
+        NULL
+      } else {
+        match.arg(trailing_slash_handling)
+      },
+      index_page_handling = if (missing(index_page_handling)) {
+        NULL
+      } else {
+        match.arg(index_page_handling)
+      },
+      host_encoding =
+        if (missing(host_encoding)) NULL else match.arg(host_encoding),
+      query_handling =
+        if (missing(query_handling)) NULL else match.arg(query_handling),
+      port_handling =
+        if (missing(port_handling)) NULL else match.arg(port_handling),
+      credential_handling = if (missing(credential_handling)) {
+        NULL
+      } else {
+        match.arg(credential_handling)
+      }
+    )))
+  }
+  opts <- do.call(.parse_options, po_args)
 
-  do.call(._safe_parse_url_scalar, c(list(url = url), opts))
+  ._safe_parse_url_scalar(url, opts)
 }
 
 # Vectorized wrapper for safe_parse_url
@@ -268,7 +660,10 @@ safe_parse_url <- function(url,
 #' @inheritParams safe_parse_url
 #' @return A data.frame with one row per URL and the same fields returned by
 #'   \code{\link{safe_parse_url}}. Invalid inputs return NA fields with
-#'   \code{parse_status = "error"}.
+#'   \code{parse_status = "error"}. Names on \code{url} are not carried into the
+#'   result: the frame always has ordinary sequential row names, matching the
+#'   accessors (\code{\link{get_host}} and friends), which return unnamed
+#'   vectors.
 #' @export
 #' @examples
 #' safe_parse_urls(c("example.com", "https://www.example.com/path"))
@@ -295,9 +690,45 @@ safe_parse_urls <- function(url,
                             ),
                             subdomain_levels_to_keep = NULL,
                             host_encoding = c("keep", "idna", "unicode"),
-                            path_encoding = c("keep", "encode", "decode")) {
+                            path_encoding = c("keep", "encode", "decode"),
+                            query_handling = c(
+                              "drop", "filter", "allow", "keep"
+                            ),
+                            params_keep = NULL,
+                            params_drop = NULL,
+                            sort_params = FALSE,
+                            empty_param_handling = c("keep", "drop"),
+                            params_case_sensitive = FALSE,
+                            decode_plus = FALSE,
+                            port_handling = c(
+                              "exclude", "keep", "strip_default", "strip_all"
+                            ),
+                            scheme_policy = c("infer", "require"),
+                            scheme_acceptance = c("web", "general"),
+                            url_standard = NULL,
+                            engine = NULL,
+                            profile = NULL,
+                            credential_handling = c("strip", "reject")) {
+  # url_standard (RURL-eqzkkohm): validate + conflict-check the governed knobs
+  # the caller explicitly supplied (see safe_parse_url() for the rationale).
+  url_standard <- .validate_url_standard(url_standard)
+  profile <- .validate_profile(profile)
+  # `path_encoding` is orthogonal (ADR 0011): not passed here, never conflicts.
+  # The conflict matrix is skipped on the profile path (see safe_parse_url()).
+  if (is.null(profile)) {
+    .check_url_standard_conflicts(url_standard, .governed_supplied(
+      path_normalization = if (missing(path_normalization)) {
+        NULL
+      } else {
+        match.arg(path_normalization)
+      },
+      case_handling =
+        if (missing(case_handling)) NULL else match.arg(case_handling)
+    ))
+  }
+
   # Validate and normalize options once (match.arg + subdomain check)
-  opts <- .parse_options(
+  po_args <- list(
     protocol_handling = protocol_handling,
     www_handling = www_handling,
     tld_source = tld_source,
@@ -308,62 +739,284 @@ safe_parse_urls <- function(url,
     scheme_relative_handling = scheme_relative_handling,
     subdomain_levels_to_keep = subdomain_levels_to_keep,
     host_encoding = host_encoding,
-    path_encoding = path_encoding
+    path_encoding = path_encoding,
+    query_handling = query_handling,
+    params_keep = params_keep,
+    params_drop = params_drop,
+    sort_params = sort_params,
+    empty_param_handling = empty_param_handling,
+    params_case_sensitive = params_case_sensitive,
+    decode_plus = decode_plus,
+    port_handling = port_handling,
+    scheme_policy = scheme_policy,
+    scheme_acceptance = scheme_acceptance,
+    url_standard = url_standard,
+    engine = engine,
+    credential_handling = credential_handling
   )
+  if (!is.null(profile)) {
+    po_args <- .merge_profile_args(po_args, .resolve_profile(profile, list(
+      url_standard = url_standard,
+      scheme_acceptance =
+        if (missing(scheme_acceptance)) NULL else match.arg(scheme_acceptance),
+      scheme_policy =
+        if (missing(scheme_policy)) NULL else match.arg(scheme_policy),
+      scheme_relative_handling = if (missing(scheme_relative_handling)) {
+        NULL
+      } else {
+        match.arg(scheme_relative_handling)
+      },
+      path_normalization = if (missing(path_normalization)) {
+        NULL
+      } else {
+        match.arg(path_normalization)
+      },
+      case_handling =
+        if (missing(case_handling)) NULL else match.arg(case_handling),
+      protocol_handling =
+        if (missing(protocol_handling)) NULL else match.arg(protocol_handling),
+      www_handling =
+        if (missing(www_handling)) NULL else match.arg(www_handling),
+      trailing_slash_handling = if (missing(trailing_slash_handling)) {
+        NULL
+      } else {
+        match.arg(trailing_slash_handling)
+      },
+      index_page_handling = if (missing(index_page_handling)) {
+        NULL
+      } else {
+        match.arg(index_page_handling)
+      },
+      host_encoding =
+        if (missing(host_encoding)) NULL else match.arg(host_encoding),
+      query_handling =
+        if (missing(query_handling)) NULL else match.arg(query_handling),
+      port_handling =
+        if (missing(port_handling)) NULL else match.arg(port_handling),
+      credential_handling = if (missing(credential_handling)) {
+        NULL
+      } else {
+        match.arg(credential_handling)
+      }
+    )))
+  }
+  opts <- do.call(.parse_options, po_args)
 
-  urls <- url
-  if (length(urls) == 0) {
-    cols <- lapply(.spu_result_fields, function(f) f$template[0])
-    names(cols) <- vapply(.spu_result_fields, function(f) f$name, character(1))
-    cols$stringsAsFactors <- FALSE
-    return(do.call(data.frame, cols))
+  # Coerce factors to their labels up front so factor input parses as the
+  # character strings it represents rather than falling through to the
+  # non-character branch below and yielding an all-error row (canonical_join()
+  # applies the same as.character() coercion to its key columns).
+  if (is.factor(url)) {
+    url <- as.character(url)
   }
 
-  urls_list <- as.list(urls)
-  parsed_list <- lapply(urls_list, function(u) {
-    do.call(._safe_parse_url_scalar, c(list(url = u), opts))
-  })
-
-  # Build a rectangular data.frame, filling NULLs with error rows
-  original_url_vec <- vapply(urls_list, function(u) {
-    if (is.null(u) ||
-      length(u) == 0 ||
-      (is.atomic(u) && length(u) == 1 && is.na(u))) {
-      return(NA_character_)
-    }
-    if (is.character(u)) {
-      return(u)
-    }
-    if (is.atomic(u) && length(u) == 1) {
-      return(as.character(u))
-    }
-    NA_character_
-  }, character(1))
-
-  empty_row <- function(orig) {
-    row <- lapply(.spu_result_fields, function(f) f$default)
-    names(row) <- vapply(.spu_result_fields, function(f) f$name, character(1))
-    row$original_url <- orig
-    row
+  # Input names are not data (RURL-vhdsqaln). `data.frame()` promotes the names
+  # of its first named component to row.names, so a named `url` reached the
+  # result frame as its row names -- where they read as though they were a
+  # column and silently survive into joins and downstream frames. The accessors
+  # already strip names via unname() (R/accessors.R:99,107); stripping once
+  # here, ahead of BOTH the character fast path and the list path, makes the
+  # agree with them instead of the surface disagreeing with itself. Guarded so
+  # the overwhelmingly common unnamed input keeps its zero-copy fast path.
+  # Values, order, length and NA-ness are untouched; only the names attribute
+  # goes, so an unnamed input is byte-identical to before.
+  if (!is.null(names(url))) {
+    url <- unname(url)
   }
 
-  normalized_list <- lapply(seq_along(parsed_list), function(i) {
-    if (is.null(parsed_list[[i]])) {
-      return(empty_row(original_url_vec[[i]]))
-    }
-    parsed_list[[i]]
-  })
+  if (length(url) == 0) {
+    return(.spu_empty_result())
+  }
 
-  cols <- lapply(.spu_result_fields, function(f) {
-    vapply(
-      normalized_list,
-      function(x) x[[f$name]] %||% f$default,
-      f$template
+  # Coerce to a character vector to parse and, separately, the original_url
+  # column. A non-character element (or a non-scalar list element) is not
+  # parseable -- it becomes NA for the engine (an "error" row), exactly as the
+  # scalar pipeline returned NULL for it -- but its original_url is still the
+  # coerced input string. This preserves the historical column semantics without
+  # a per-URL loop.
+  if (is.character(url)) {
+    # Fast path: a plain character vector needs no per-element coercion --
+    # every element is already a length-1 character (NA included), so both the
+    # original_url column and the parse input equal the input verbatim. This is
+    # the overwhelmingly common shape and keeps the warm/duplicate path O(1) per
+    # element instead of two vapply() closures over the whole vector.
+    original_url_vec <- url
+    parse_input <- url
+  } else {
+    urls_list <- as.list(url)
+    original_url_vec <- vapply(urls_list, .spu_coerce_original, character(1))
+    parse_input <- vapply(
+      urls_list,
+      function(u) if (is.character(u) && length(u) == 1L) u else NA_character_,
+      character(1)
     )
-  })
+  }
+
+  # De-duplicate + memoize at the unique-URL level: unique parse inputs are
+  # parsed once (with cross-call reuse via the full_parse cache), then expanded
+  # back to every row. Duplicates cost only the match() inside
+  # ._parse_urls_cached(). original_url is restored per row afterwards so it
+  # reflects the input element even for duplicates / NA / non-character rows.
+  field_names <- vapply(.spu_result_fields, function(f) f$name, character(1))
+  # Neutralized HERE and not only inside ._parse_urls_cached(), because
+  # .mask_opaque_authority() reads `parse_input` itself rather than receiving it
+  # from that funnel: it walks the whole vector the moment any row is `mailto:`,
+  # so a bytes-marked row elsewhere in the same batch threw there even with the
+  # funnel guarded. Measured, not assumed -- see .neutralize_bytes_input() for
+  # the reproducer and why the accessors do not show it.
+  parse_input <- .neutralize_bytes_input(parse_input)
+  cols <- .mask_opaque_authority(._parse_urls_cached(parse_input, opts), opts,
+                                 parse_input)
+  cols <- cols[field_names]
+  cols$original_url <- original_url_vec
+  cols$stringsAsFactors <- FALSE
+  do.call(data.frame, cols)
+}
+
+# Authority columns the parse TABLE must not present for an opaque-path row.
+# `port`/`password` are never populated for one, so masking these eight is
+# exhaustive; `is_ip_host` stays FALSE exactly as it is for every other opaque
+# row (`tel:`, `data:`), so it is deliberately not in the list.
+.spu_opaque_authority_cols <- c(
+  "host", "user",
+  "domain", "tld",
+  "domain_ascii", "domain_unicode", "tld_ascii", "tld_unicode"
+)
+
+# T1 (RURL-glphqenm): a non-special scheme with no `//` is a WHATWG OPAQUE PATH
+# -- it has no authority, so the parse table presents no host/user and no PSL
+# decomposition of one. The opaque parser already yields NA authority for every
+# such row (`tel:`, `data:`, `sc:`); the sole exception is the ADR 0012 D7
+# `mailto:` recipient decomposition, which Stage A writes into the internal
+# host/user precisely so the get_*() accessors resolve a recipient domain
+# through the SAME PSL/presentation branches a web host takes.
+#
+# That value is extraction metadata about a recipient, not the URL's authority,
+# so this is where it stops: the public parse table masks it, while the accessor
+# seam (.extract_from_urls) keeps reading the unmasked columns. D7 already
+# declared `get_host`(mailto) and `clean_url`(mailto) independent and called the
+# write "extraction metadata ONLY" -- masking here is what finally makes that
+# true of the table too. `safe_parse_url()` and `get_host()` therefore diverge
+# for a mailto under general acceptance, by design (see D7's amendment note).
+.mask_opaque_authority <- function(cols, opts, url) {
+  if (!identical(opts$scheme_acceptance, "general")) {
+    return(cols)
+  }
+  scheme <- cols[["scheme"]]
+  is_mailto <- !is.na(scheme) & .ascii_tolower(scheme) == "mailto"
+  if (!any(is_mailto)) {
+    return(cols)
+  }
+  # BOTH halves of the opaque-path rule must hold. Matching the scheme alone
+  # masked `mailto://example.com:8080/p` too -- a non-special scheme that DOES
+  # carry a `//` authority, so not an opaque path at all. That row kept its
+  # parsed `port` while losing its `host`, presenting an authority with a port
+  # and no host (RURL-gmzipkyw; WPT `mailto://example.com:8080/pathname?...`
+  # expects hostname `example.com`).
+  is_mailto <- is_mailto & !.has_explicit_authority(url, opts$url_standard)
+  if (!any(is_mailto)) {
+    return(cols)
+  }
+  for (field in .spu_opaque_authority_cols) {
+    cols[[field]][is_mailto] <- NA_character_
+  }
+  cols
+}
+
+# Does the input carry an explicit `//` authority after its scheme colon? This
+# is the "and no `//`" half of the WHATWG opaque-path test, so it mirrors the
+# two input normalizations the parser performs before it chooses between an
+# authority and an opaque path: tab/LF/CR are removed everywhere (whatwg only,
+# a no-op otherwise) and leading C0-control-or-space is trimmed.
+.has_explicit_authority <- function(url, url_standard) {
+  if (length(url) == 0L) {
+    return(logical(0))
+  }
+  u <- ifelse(is.na(url), "", as.character(url))
+  u <- .strip_whatwg_control_chars_vec(u, url_standard)$url
+  u <- stringi::stri_replace_first_regex(u, "^[\\u0000-\\u0020]+", "")
+  grepl("^[A-Za-z][A-Za-z0-9+.-]*://", u)
+}
+
+# Empty (zero-row) result data.frame with the canonical column set/types.
+.spu_empty_result <- function() {
+  cols <- lapply(.spu_result_fields, function(f) f$template[0])
   names(cols) <- vapply(.spu_result_fields, function(f) f$name, character(1))
   cols$stringsAsFactors <- FALSE
   do.call(data.frame, cols)
+}
+
+# Declare (not convert) the parsed host as UTF-8. The web-route parser hands
+# back the host as raw bytes marked "unknown" (native), so under a non-UTF-8
+# LC_CTYPE (e.g. LC_ALL=C, which win-builder uses) downstream consumers --
+# `pslr` and `punycoder::host_normalize()` -- re-decode those bytes in the
+# session locale and disagree with a UTF-8 session: `pslr` returns NA (domain /
+# tld / *_ascii / *_unicode all NA) and `host_normalize()` flips the WHATWG
+# UTS-46 fatal gate. Marking the bytes UTF-8 makes the whole pipeline
+# locale-invariant. It must be `Encoding<-` and NOT `enc2utf8()`: `enc2utf8()`
+# *transcodes* from the session locale, which is the locale-sensitive step this
+# is fixing. Bytes are untouched; NA elements keep their NA-ness.
+.mark_host_utf8 <- function(x) {
+  if (length(x) == 0L) {
+    return(x)
+  }
+  ok <- !is.na(x)
+  if (any(ok)) {
+    Encoding(x[ok]) <- "UTF-8"
+  }
+  x
+}
+
+# Output-side counterpart of .mark_host_utf8(): declare (not convert) every
+# CHARACTER component of an assembled result as UTF-8, so what rurl RETURNS
+# carries the same encoding contract as what it parses. Without it, components
+# handed back from `pslr` / `punycoder` (domain / tld / *_ascii / *_unicode) and
+# the host-derived strings arrive marked "unknown" (native bytes), so in a
+# non-UTF-8 session they print wrong and `identical()` / joins on `domain` stay
+# locale-dependent. Applied UNIFORMLY to every character component rather than
+# only the ones that can carry non-ASCII: R ignores an encoding mark on a pure
+# ASCII string (`Encoding()` stays "unknown"), so marking the ASCII-by-
+# construction components (parse_status, *_ascii, scheme) is a literal no-op,
+# and uniformity avoids the bug this fixes -- a component marked in one accessor
+# and native in another. Non-character components (port, is_ip_host) are left
+# alone. Values, NA-ness, length, order, names and types are untouched.
+.mark_result_utf8 <- function(res) {
+  for (nm in names(res)) {
+    if (is.character(res[[nm]])) {
+      res[[nm]] <- .mark_host_utf8(res[[nm]])
+    }
+  }
+  res
+}
+
+# Coerce one input element to the scalar `original_url` value: NA for missing
+# or non-scalar inputs, the string itself for a length-1 character, else
+# as.character().
+#
+# The `length(u) == 1L` guard on the character branch is load-bearing
+# (RURL-ksozrswe): without it a list element that is a character vector of
+# length > 1 was returned verbatim, so the caller's
+# `vapply(..., character(1))` aborted the WHOLE call with base R's untyped
+# "values must be length 1" message. A list element of the wrong length is bad
+# DATA, not a contract violation, so it must recover row-locally as an error row
+# (P1.1 §3.4). NA_character_ is what this function already returns for every
+# other non-scalar shape -- NULL, length 0, and a non-character vector of length
+# > 1 -- so the guard makes the character case follow the rule the rest of the
+# function already states, rather than inventing a deparsed/collapsed string.
+.spu_coerce_original <- function(u) {
+  is_missing_url <- is.null(u) ||
+    length(u) == 0 ||
+    (is.atomic(u) && length(u) == 1 && is.na(u))
+  if (is_missing_url) {
+    return(NA_character_)
+  }
+  if (is.character(u) && length(u) == 1L) {
+    return(u)
+  }
+  if (is.atomic(u) && length(u) == 1) {
+    return(as.character(u))
+  }
+  NA_character_
 }
 
 # Validate and normalize the parsing options shared by safe_parse_url() and
@@ -371,29 +1024,513 @@ safe_parse_urls <- function(url,
 # subdomain_levels_to_keep, returning a list keyed by option name. The formal
 # defaults below are the single source of the allowed choices, so match.arg()
 # resolves them here rather than in each public function.
-.parse_options <- function(protocol_handling = c(
-                             "keep", "none", "strip", "http", "https"
-                           ),
-                           www_handling = c(
-                             "none", "strip", "keep", "if_no_subdomain"
-                           ),
-                           tld_source = c("all", "private", "icann"),
-                           case_handling = c(
-                             "lower_host", "keep", "lower", "upper"
-                           ),
-                           trailing_slash_handling = c("none", "keep", "strip"),
-                           index_page_handling = c("keep", "strip"),
-                           path_normalization = c(
-                             "none", "collapse_slashes", "dot_segments", "both"
-                           ),
-                           scheme_relative_handling = c(
-                             "keep", "http", "https", "error"
-                           ),
+# Allowed choices for the parsing options. Hoisted to constants so the
+# .parse_options() signature does not need multi-line default vectors;
+# match.arg() resolves each formal's default to the matching constant.
+.opt_protocol_handling <- c("keep", "none", "strip", "http", "https")
+.opt_www_handling <- c("none", "strip", "keep", "if_no_subdomain")
+.opt_tld_source <- c("all", "private", "icann")
+.opt_case_handling <- c("lower_host", "keep", "lower", "upper")
+.opt_trailing_slash_handling <- c("none", "keep", "strip")
+.opt_index_page_handling <- c("keep", "strip")
+.opt_path_normalization <- c("none", "collapse_slashes", "dot_segments", "both")
+.opt_scheme_relative_handling <- c("keep", "http", "https", "error")
+# scheme_policy (RURL-vzgeurae): the input-*acceptance* axis for scheme-less
+# host-shaped input, orthogonal to protocol_handling (presentation) and
+# url_standard (interpretation). "infer" (default) fabricates "http://" for
+# scheme-less host-shaped input (today's behavior, byte-for-byte). "require"
+# rejects it (strict / pure-parser posture). See .prepare_urls_for_parse_vec().
+.opt_scheme_policy <- c("infer", "require")
+# scheme_acceptance (ADR 0012 D3): the scheme-*acceptance* axis, orthogonal to
+# protocol_handling (presentation) and url_standard (interpretation). "web"
+# (default) keeps the curated web-scheme allowlist -- scheme-bearing input
+# outside http/https/ftp/ftps/file is an error, now decoupled from
+# protocol_handling. "general" admits any syntactically valid scheme token and
+# defers interpretation to url_standard (hence D3's composition rule: general
+# requires a non-NULL url_standard). "general" is internal-only until the L3/L4
+# shapers land (ADR 0012 Layer-2 build-order gate); it is NOT on any public
+# signature yet.
+.opt_scheme_acceptance <- c("web", "general")
+# --- fixup_posture (RURL-jynceqrj, ADR 0012 Layer 6a) -----------------------
+# The input-repair axis: "none" (default) never touches the string; "browser"
+# runs the bounded, deterministic single-pass string fixer BEFORE the WHATWG
+# parser (outer C0/space trim, `;`->`:` and `://` insertion for recognized
+# special schemes). This is the fix-up posture that the future public `browser`
+# profile will set (ADR 0012 standing rule 2); like `scheme_acceptance =
+# "general"`, it is internal-only until the L6b profile lands -- it is NOT on
+# any public signature yet. The step-4 fallback `http` prepend is NOT part of
+# this fixer: it is the existing `scheme_policy = "infer"` seam, shared with the
+# default posture (ADR 0012 D4 -- one prepend impl).
+.opt_fixup_posture <- c("none", "browser")
+.opt_host_encoding <- c("keep", "idna", "unicode")
+.opt_path_encoding <- c("keep", "encode", "decode")
+.opt_query_handling <- c("drop", "filter", "allow", "keep")
+.opt_empty_param_handling <- c("keep", "drop")
+# Standalone, standard-independent editorial knob (PRD v2 D1, RURL-qdlvldts):
+# "exclude" (default) is today's only behavior -- port never appears in
+# clean_url. "keep" includes the port, subject to url_standard's own
+# syntactic default ports. "strip_default" keeps only non-default ports,
+# independent of url_standard, and is the spec-style port renderer for clean
+# URLs. "strip_all" is an explicit alias of "exclude". Lives alongside
+# www_handling/trailing_slash_handling in the cleanup-knob tier -- NOT part of
+# .URL_STANDARD_PROFILES.
+.opt_port_handling <- c("exclude", "keep", "strip_default", "strip_all")
+# credential_handling (RUL-001, ADR 0017 row 12): a policy dial on the clean
+# surface, not a standards axis, so it composes with every `url_standard`
+# including NULL. "strip" (default) is today's behavior byte-for-byte -- the
+# userinfo is dropped and the rest of the URL is emitted. "reject" sets
+# `clean_url` to NA whenever the parsed authority carried any userinfo
+# delimiter (RFC 3986 sec 3.2.1: "user:password" is deprecated and an
+# application may reject it; sec 7.5 / sec 7.6 for the leak and the semantic
+# attack it invites). Nothing else moves. There is deliberately no "keep":
+# serialize_url() already preserves credentials under both standards.
+.opt_credential_handling <- c("strip", "reject")
+
+# --- url_standard selector (RURL-eqzkkohm) -----------------------------------
+#
+# `url_standard` is the top-level coherent-profile selector: NULL (today's
+# behavior, exactly) or one of the two governed standards. It is threaded
+# through every public parse/accessor function and stored on `opts` so later
+# tickets can consume it in Stage A/B. In THIS ticket (T1, RURL-bbojhnhu) the
+# profile->behavior mapping is a deliberate NO-OP: the argument exists,
+# validates, and conflict-checks, but path/host output is byte-for-byte
+# unchanged. T3/T4/T5 replace the placeholder behavior WITHOUT changing the
+# conflict matrix defined below.
+.url_standard_choices <- c("rfc3986", "whatwg")
+
+# Final conflict matrix (PRD §5, D3; amended by ADR 0011 / RURL-sjnqhwtl). For
+# each GOVERNED knob it records the value the selected profile "would choose".
+# `path_identity` is the profile's path IDENTITY-normalization mode (a
+# profile-internal sentinel with NO public enum equivalent) -- it is NOT a
+# public argument, so it is never conflict-checked. The public presentation
+# knob `path_encoding` (keep/encode/decode) is now ORTHOGONAL and un-governed:
+# it layers on any profile like `host_encoding` (ADR 0011). `path_normalization`
+# resolves dot segments under both profiles, so its value is "dot_segments"
+# (v1 profiles do not collapse slashes, so "both" conflicts).
+# `case_handling` (PRD v2 §5 D5, RURL-mevmyhxz): both profiles require
+# "lower_host" -- it already matches RFC 3986 sec 6.2.2.1 and WHATWG
+# scheme/host casing, and lowercases scheme+host only. "lower" also
+# lowercases the path (R/parse-phases.R .apply_case_policy_vec), which
+# neither spec sanctions, so it conflicts like "keep"/"upper" rather than
+# being treated as a superset of "lower_host". No new casing logic -- this
+# is a conflict-matrix entry only.
+# Host IPv4 behavior is governed too, but it is not exposed as a public knob, so
+# it contributes no conflict-checkable argument here.
+.URL_STANDARD_PROFILES <- list(
+  rfc3986 = list(
+    path_identity = ".rfc3986_unreserved",
+    path_normalization = "dot_segments",
+    case_handling = "lower_host"
+  ),
+  whatwg = list(
+    path_identity = ".whatwg_preserve",
+    path_normalization = "dot_segments",
+    case_handling = "lower_host"
+  )
+)
+
+# --- public named profiles (ADR 0012 Layer 6 / D6, RURL-djmgzjmr) -------------
+#
+# A `profile` is the public sugar that bundles the parser knobs the earlier
+# layers built (acceptance + interpretation + leniency + canonicalization) under
+# one inspectable name. It is SEPARATE from `url_standard` (merging them is a
+# category error): a profile RESOLVES to a bundle of knob->value pairs, expands
+# only into slots the caller did not explicitly supply (explicit args override
+# the profile -- iron rule), and is inspectable via `url_profile()`.
+#
+# `.URL_PROFILES` mirrors `.URL_STANDARD_PROFILES` in shape/placement: each
+# entry is the resolved knob->value set for that profile. Only knobs the profile
+# actually governs appear; everything else flows from the caller's arguments (or
+# their defaults). The four bundles keep the "<= 4 profiles" claim true; `seo`
+# is primary with `canonical` an ALIAS (one bundle, not a fifth).
+#
+# `fixup_posture` and `path_identity` are NOT public wrapper formals (ADR 0012
+# standing rule 2 / ADR 0011); a profile is the ONLY seam that may set them.
+.URL_PROFILES <- list(
+  # honest home for the historical http-prepending: browser-*like*, not
+  # Chrome-faithful. NO https_upgrade knob (navigation-layer, out of scope).
+  browser = list(
+    url_standard = "whatwg",
+    scheme_acceptance = "general",
+    scheme_policy = "infer",
+    scheme_relative_handling = "http",
+    fixup_posture = "browser",
+    credential_handling = "strip"
+  ),
+  # absolute-URL, no-base spec posture. Deliberately sets scheme_policy =
+  # "require", so it REJECTS scheme-less input a direct url_standard = "whatwg"
+  # call (default scheme_policy = "infer") would accept (ADR 0012 foot-gun).
+  whatwg = list(
+    url_standard = "whatwg",
+    scheme_acceptance = "general",
+    scheme_policy = "require",
+    scheme_relative_handling = "error",
+    credential_handling = "strip"
+  ),
+  # Unicode-tolerant RFC-shaped generic syntax: PARSING, not normalization. The
+  # path_normalization/case_handling/path_identity entries are AUTHORIZED
+  # normalization exceptions (ADR 0012 lines 518-519), not conflicts with
+  # ADR 0007 -- they bypass the direct-user conflict matrix on the profile path
+  # only and win over the url_standard profile expansion in .parse_options().
+  `rfc-syntax` = list(
+    url_standard = "rfc3986",
+    scheme_acceptance = "general",
+    scheme_policy = "require",
+    scheme_relative_handling = "keep",
+    path_normalization = "none",
+    case_handling = "keep",
+    path_identity = "none",
+    credential_handling = "strip"
+  ),
+  # rurl's ORIGIN cleaning intent, finally named. scheme_acceptance stays "web"
+  # (the default) -- the built-in semantic transforms are HTTP(S)-only, which
+  # the existing pipeline already enforces. Maps exactly onto get_clean_url()'s
+  # existing knobs; no new cleaning machinery.
+  #
+  # `url_standard` and `host_encoding` implement the clean-URL definition
+  # (RURL-hcntbqku, ADR 0017 D1): a clean URL is a lossy policy projection of
+  # a WHATWG-parsed URL, not a separate weaker construction and not "visual
+  # tweaks" -- the editorial knobs below can change the addressed resource,
+  # and RUL-017 keeps them here on purpose (an SEO bundle is a site policy).
+  # `url_standard = "whatwg"` puts a real
+  # standard parse underneath -- which is also what RESOLVES dot segments, via
+  # the .URL_STANDARD_PROFILES expansion in .parse_options() (path_identity +
+  # path_normalization = "dot_segments"). `host_encoding = "unicode"` makes the
+  # host canonical in ONE direction: the default "keep" echoes whichever
+  # spelling the input used, so the same site yielded `xn--` from one row and
+  # Unicode from the next. Both live in the BUNDLE, not in the global defaults:
+  # `url_standard = NULL` output is frozen byte-for-byte by ADR 0007 and is not
+  # disturbed here.
+  seo = list(
+    url_standard = "whatwg",
+    scheme_acceptance = "web",
+    protocol_handling = "https",
+    www_handling = "strip",
+    trailing_slash_handling = "strip",
+    index_page_handling = "strip",
+    host_encoding = "unicode",
+    # ADR 0017 D3: the WHOLE query goes. `filter` reads as a category and
+    # behaves as a name list (`utm=x` survives, `utm_source=x` does not), and
+    # leaving it here made `profile = "seo"` LESS clean on parameters than
+    # passing no profile at all -- the surface's own default is "drop".
+    query_handling = "drop",
+    # RUL-016 (ADR 0017 D2 row 9, amended): drop the DEFAULT port, keep a
+    # non-default one. RFC 3986 sec 6.2.3 and the WHATWG port state make the
+    # default port equivalent to no port; nothing sanctions dropping a
+    # non-default port, which names a different origin (RFC 6454 sec 4).
+    # Inheriting the surface default "exclude" folded `http://host:8080/a`
+    # into `https://host/a`. Pinned here, not changed globally: the surface
+    # default stays "exclude", byte-identical.
+    port_handling = "strip_default",
+    # ADR 0017 row 12 / RUL-001: every bundle keeps the surface default. The
+    # dial is caller-pickable (iron rule) and never a bundle's opinion.
+    credential_handling = "strip"
+  )
+)
+
+# Profile aliases: `canonical` resolves identically to `seo` (one bundle, keeps
+# the count at 4). This naming is a maintainer decision (RURL-djmgzjmr).
+.URL_PROFILE_ALIASES <- list(canonical = "seo")
+
+# Public choice set for the `profile` argument (bundle names + aliases).
+.url_profile_choices <- c(names(.URL_PROFILES), names(.URL_PROFILE_ALIASES))
+
+# Choice sets for the knobs a profile bundle may carry, keyed by knob name. Used
+# by url_profile() to validate/resolve caller-supplied overrides (the parse
+# wrappers validate via .parse_options()). `path_identity` and `fixup_posture`
+# are profile-internal / profile-only and are not caller-supplyable here.
+.profile_knob_choices <- list(
+  url_standard = .url_standard_choices,
+  scheme_acceptance = .opt_scheme_acceptance,
+  scheme_policy = .opt_scheme_policy,
+  scheme_relative_handling = .opt_scheme_relative_handling,
+  path_normalization = .opt_path_normalization,
+  case_handling = .opt_case_handling,
+  protocol_handling = .opt_protocol_handling,
+  www_handling = .opt_www_handling,
+  trailing_slash_handling = .opt_trailing_slash_handling,
+  index_page_handling = .opt_index_page_handling,
+  host_encoding = .opt_host_encoding,
+  query_handling = .opt_query_handling,
+  port_handling = .opt_port_handling,
+  credential_handling = .opt_credential_handling
+)
+
+# Validate `profile`: NULL (default) or one of the allowed profile/alias names.
+# Returns the value unchanged (NULL passes through) or errors.
+.validate_profile <- function(profile) {
+  if (is.null(profile)) {
+    return(NULL)
+  }
+  valid <- is.character(profile) &&
+    length(profile) == 1L &&
+    !is.na(profile) &&
+    profile %in% .url_profile_choices
+  if (!valid) {
+    stop(
+      "profile must be NULL or one of: ",
+      toString(.url_profile_choices),
+      ".",
+      call. = FALSE
+    )
+  }
+  profile
+}
+
+# Resolve a profile to its final knob->value bundle. `supplied` is a named list
+# of knobs the caller EXPLICITLY supplied (already resolved to canonical
+# spellings); for each such knob that the bundle also sets, the caller's value
+# OVERRIDES the profile (iron rule) and the resolution is marked `customized`.
+# Alias names (canonical) are resolved first. Single source of truth shared by
+# the parse wrappers and the url_profile() inspector so they cannot diverge.
+.resolve_profile <- function(profile, supplied = list()) {
+  name <- profile
+  if (!is.null(.URL_PROFILE_ALIASES[[name]])) {
+    name <- .URL_PROFILE_ALIASES[[name]]
+  }
+  bundle <- .URL_PROFILES[[name]]
+  supplied <- supplied[!vapply(supplied, is.null, logical(1))]
+  overrides <- supplied[intersect(names(supplied), names(bundle))]
+  for (knob in names(overrides)) {
+    bundle[[knob]] <- overrides[[knob]]
+  }
+  list(
+    profile = name,
+    opts = bundle,
+    # The knobs the caller EXPLICITLY supplied, whether or not the bundle also
+    # carries them, already match.arg()-resolved by the calling wrapper.
+    # `overrides` above can only see bundle knobs; .merge_profile_args() needs
+    # the wider set to keep the iron rule true for a knob the url_standard
+    # expansion in .parse_options() would otherwise clobber.
+    supplied = supplied,
+    customized = length(overrides) > 0L
+  )
+}
+
+# Merge a resolved profile bundle into a parse-argument list (the arg list a
+# public wrapper passes to .parse_options() or .extract_from_urls()). Bundle
+# knobs that are formals of the target overwrite their entry; `fixup_posture`
+# (browser) is threaded even though it is not a public wrapper formal; and the
+# authorized path exceptions (path_normalization / path_identity) are handed
+# over as `profile_authorized` so they SURVIVE the url_standard profile
+# expansion inside .parse_options() (localized to the profile path).
+.merge_profile_args <- function(args, res) {
+  for (knob in intersect(names(res$opts), names(args))) {
+    args[[knob]] <- res$opts[[knob]]
+  }
+  if (!is.null(res$opts$fixup_posture)) {
+    args$fixup_posture <- res$opts$fixup_posture
+  }
+  auth <- res$opts[intersect(
+    names(res$opts), c("path_normalization", "path_identity")
+  )]
+  # Iron rule under a bundle that carries `url_standard` (RURL-hcntbqku): when
+  # the bundle selects a standard, .parse_options() expands
+  # .URL_STANDARD_PROFILES over `path_normalization`, which would silently
+  # overwrite a value the CALLER supplied explicitly. `res$supplied` names the
+  # caller's explicit knobs, so route that one through `profile_authorized`,
+  # which is applied AFTER the expansion. Without this, an explicit
+  # `path_normalization` is ignored on any profile that sets `url_standard`.
+  if (!is.null(res$opts$url_standard) &&
+        !is.null(res$supplied$path_normalization)) {
+    auth$path_normalization <- res$supplied$path_normalization
+  }
+  if (length(auth) > 0L) {
+    args$profile_authorized <- auth
+  }
+  args
+}
+
+# Public choice sets for the CONFLICT-CHECKABLE governed knobs, used to resolve
+# partial matches (e.g. path_normalization = "dot" -> "dot_segments") before the
+# conflict check so a legitimate abbreviated value is not mistaken for a
+# conflicting one. `path_identity` is absent: it is profile-internal, not a
+# public argument, so it is never supplied and never resolved here.
+.url_standard_governed_choices <- list(
+  path_normalization = .opt_path_normalization,
+  case_handling = .opt_case_handling
+)
+
+# Require `url_standard` on the three companion helpers that report
+# profile-derived facts (`get_host_type()`, `get_url_diagnostics()`,
+# `get_scheme_class()`). ADR 0015 supersedes ADR 0007's byte-for-byte clause
+# for these three: a host type, a diagnostic vocabulary and a special-scheme
+# classification are all functions of the selected profile, so there is no
+# profile-neutral answer for them to return and the selector-less mode could
+# only ever report `NA`. `what` names the fact in the error message.
+.require_url_standard <- function(url_standard, what) {
+  if (is.null(url_standard)) {
+    stop(
+      "`url_standard` is required: pass \"whatwg\" or \"rfc3986\". ",
+      what, " is a function of the standard profile, so there is no ",
+      "profile-neutral answer to report.",
+      call. = FALSE
+    )
+  }
+  .validate_url_standard(url_standard)
+}
+
+# Validate `url_standard`: NULL (default) or one of the allowed profile names.
+# Returns the value unchanged (NULL passes through) or errors.
+.validate_url_standard <- function(url_standard) {
+  if (is.null(url_standard)) {
+    return(NULL)
+  }
+  valid <- is.character(url_standard) &&
+    length(url_standard) == 1L &&
+    !is.na(url_standard) &&
+    url_standard %in% .url_standard_choices
+  if (!valid) {
+    stop(
+      "url_standard must be NULL, \"rfc3986\", or \"whatwg\".",
+      call. = FALSE
+    )
+  }
+  url_standard
+}
+
+# Validate the optional per-request pslr engine (RURL-mhibnqbd). NULL means the
+# session-global default (unchanged behavior); otherwise it must be a
+# `psl_engine` object from `pslr::psl_engine()`. Returned unchanged so callers
+# store it verbatim. NOTE (process-local hazard): a psl_engine holds a C++
+# external pointer that does NOT serialize across R sessions or parallel
+# workers; it must be built in the process that uses it, never cached to disk
+# or sent to a worker.
+.validate_engine <- function(engine) {
+  if (is.null(engine)) {
+    return(NULL)
+  }
+  if (!inherits(engine, "psl_engine")) {
+    stop(
+      "engine must be NULL or a `psl_engine` object from ",
+      "`pslr::psl_engine()`.",
+      call. = FALSE
+    )
+  }
+  engine
+}
+
+# Collect the governed knobs a caller EXPLICITLY supplied: each argument is
+# either the resolved value or NULL (not supplied). Drops the NULLs, leaving a
+# named list keyed by knob name.
+.governed_supplied <- function(...) {
+  args <- list(...)
+  args[!vapply(args, is.null, logical(1))]
+}
+
+# Resolve each supplied governed value against its public choice set so partial
+# matches compare as their canonical spelling. A value outside the set (or an
+# internal profile sentinel) is left untouched so it still registers as a
+# conflict.
+.resolve_governed_values <- function(supplied) {
+  for (knob in names(supplied)) {
+    choices <- .url_standard_governed_choices[[knob]]
+    if (!is.null(choices)) {
+      supplied[[knob]] <- tryCatch(
+        match.arg(supplied[[knob]], choices),
+        error = function(e) supplied[[knob]]
+      )
+    }
+  }
+  supplied
+}
+
+# Conflict check (PRD §5, D3): when `url_standard` is set, every governed knob
+# the caller EXPLICITLY supplied must equal the value the selected profile would
+# choose; a different value errors. `supplied` is a named list of resolved
+# governed values (from .governed_supplied()). No-op when url_standard is NULL
+# or nothing governed was supplied.
+.check_url_standard_conflicts <- function(url_standard, supplied) {
+  if (is.null(url_standard) || length(supplied) == 0L) {
+    return(invisible(NULL))
+  }
+  profile <- .URL_STANDARD_PROFILES[[url_standard]]
+  for (knob in names(supplied)) {
+    required <- profile[[knob]]
+    if (is.null(required)) {
+      next
+    }
+    if (!identical(supplied[[knob]], required)) {
+      stop(
+        sprintf(
+          paste0(
+            "url_standard = \"%s\" governs `%s`; remove the explicit `%s` ",
+            "argument (the profile sets it) or drop url_standard."
+          ),
+          url_standard, knob, knob
+        ),
+        call. = FALSE
+      )
+    }
+  }
+  invisible(NULL)
+}
+
+# Conflict check across a `...` seam (canonical_join()), where missing() cannot
+# tell which knobs the caller supplied. Reads the governed knob names straight
+# from the captured dots list, validates url_standard, and applies the same
+# conflict rule.
+.check_url_standard_conflicts_dots <- function(dots) {
+  url_standard <- .validate_url_standard(dots$url_standard)
+  if (is.null(url_standard)) {
+    return(invisible(NULL))
+  }
+  governed <- names(.URL_STANDARD_PROFILES[[url_standard]])
+  supplied <- .resolve_governed_values(dots[intersect(names(dots), governed)])
+  .check_url_standard_conflicts(url_standard, supplied)
+}
+
+# Validate a params_keep / params_drop argument: NULL or a character vector of
+# glob patterns. Returns it unchanged (NULL passes through) or errors.
+.validate_param_patterns <- function(x, arg_name) {
+  if (is.null(x)) {
+    return(NULL)
+  }
+  if (!is.character(x)) {
+    stop(arg_name, " must be NULL or a character vector.", call. = FALSE)
+  }
+  x
+}
+
+# Validate a scalar logical flag (sort_params / params_case_sensitive /
+# decode_plus). Returns it unchanged or errors.
+.validate_flag <- function(x, arg_name) {
+  if (!is.logical(x) || length(x) != 1L || is.na(x)) {
+    stop(arg_name, " must be a single logical (TRUE or FALSE).", call. = FALSE)
+  }
+  x
+}
+
+.parse_options <- function(protocol_handling = .opt_protocol_handling,
+                           www_handling = .opt_www_handling,
+                           tld_source = .opt_tld_source,
+                           case_handling = .opt_case_handling,
+                           trailing_slash_handling =
+                             .opt_trailing_slash_handling,
+                           index_page_handling = .opt_index_page_handling,
+                           path_normalization = .opt_path_normalization,
+                           scheme_relative_handling =
+                             .opt_scheme_relative_handling,
                            subdomain_levels_to_keep = NULL,
-                           host_encoding = c("keep", "idna", "unicode"),
-                           path_encoding = c("keep", "encode", "decode")) {
+                           host_encoding = .opt_host_encoding,
+                           path_encoding = .opt_path_encoding,
+                           query_handling = .opt_query_handling,
+                           params_keep = NULL,
+                           params_drop = NULL,
+                           sort_params = FALSE,
+                           empty_param_handling = .opt_empty_param_handling,
+                           params_case_sensitive = FALSE,
+                           decode_plus = FALSE,
+                           port_handling = .opt_port_handling,
+                           scheme_policy = .opt_scheme_policy,
+                           scheme_acceptance = .opt_scheme_acceptance,
+                           fixup_posture = .opt_fixup_posture,
+                           url_standard = NULL,
+                           engine = NULL,
+                           profile_authorized = NULL,
+                           credential_handling = .opt_credential_handling) {
   # match.arg first (matches the original error precedence), then validate
-  # subdomain_levels_to_keep.
+  # subdomain_levels_to_keep and the query options.
   opts <- list(
     protocol_handling = match.arg(protocol_handling),
     www_handling = match.arg(www_handling),
@@ -404,13 +1541,37 @@ safe_parse_urls <- function(url,
     path_normalization = match.arg(path_normalization),
     scheme_relative_handling = match.arg(scheme_relative_handling),
     host_encoding = match.arg(host_encoding),
-    path_encoding = match.arg(path_encoding)
+    path_encoding = match.arg(path_encoding),
+    # Internal path IDENTITY mode (ADR 0011). "none" unless a url_standard
+    # profile sets it below; never a public argument. Kept distinct from the
+    # public presentation knob `path_encoding`.
+    path_identity = "none",
+    query_handling = match.arg(query_handling),
+    empty_param_handling = match.arg(empty_param_handling),
+    port_handling = match.arg(port_handling),
+    scheme_policy = match.arg(scheme_policy),
+    scheme_acceptance = match.arg(scheme_acceptance),
+    fixup_posture = match.arg(fixup_posture),
+    # Stage-B policy dial (RUL-001): excluded from the Stage-A cache key like
+    # every other presentation option.
+    credential_handling = match.arg(credential_handling),
+    params_keep = .validate_param_patterns(params_keep, "params_keep"),
+    params_drop = .validate_param_patterns(params_drop, "params_drop"),
+    sort_params = .validate_flag(sort_params, "sort_params"),
+    params_case_sensitive = .validate_flag(
+      params_case_sensitive, "params_case_sensitive"
+    ),
+    decode_plus = .validate_flag(decode_plus, "decode_plus")
   )
 
-  if (!is.null(subdomain_levels_to_keep) &&
-    (!is.numeric(subdomain_levels_to_keep) ||
-      subdomain_levels_to_keep < 0 ||
-      subdomain_levels_to_keep %% 1 != 0)) {
+  valid_subdomain_value <- is.numeric(subdomain_levels_to_keep) &&
+    length(subdomain_levels_to_keep) == 1L &&
+    !is.na(subdomain_levels_to_keep) &&
+    subdomain_levels_to_keep >= 0 &&
+    subdomain_levels_to_keep %% 1 == 0
+  invalid_subdomain_levels <-
+    !is.null(subdomain_levels_to_keep) && !valid_subdomain_value
+  if (invalid_subdomain_levels) {
     stop(
       "subdomain_levels_to_keep must be NULL or a non-negative integer.",
       call. = FALSE
@@ -419,88 +1580,1214 @@ safe_parse_urls <- function(url,
   # Single-bracket list() assignment keeps the element when the value is NULL
   # ($<- NULL would drop it).
   opts["subdomain_levels_to_keep"] <- list(subdomain_levels_to_keep)
+  # url_standard (RURL-eqzkkohm): validated + stored on opts so later tickets
+  # can consume it in Stage A/B. Re-validated defensively; the public wrappers
+  # already validate (and run the missing()-based conflict check they alone can
+  # see). Single-bracket assignment keeps a NULL element.
+  opts["url_standard"] <- list(.validate_url_standard(url_standard))
+  # engine (RURL-mhibnqbd): the optional per-request pslr snapshot threaded into
+  # the domain/PSL derivation. NULL (the default) means "use pslr's session-
+  # global default engine" and keeps every call path byte-identical. Validated
+  # + stored with single-bracket assignment so a NULL element is retained. Its
+  # identity also enters the Stage-A cache key (.parse_cache_keys) so two calls
+  # under different engines never share a memoized domain/TLD.
+  opts["engine"] <- list(.validate_engine(engine))
+  # Apply the selected profile's governed values (PRD S5, D3). The conflict
+  # checkers above (run by the public wrappers, before this function is
+  # called) already guarantee any EXPLICIT governed knob equals what the
+  # profile requires, so this cannot silently override a caller's conflicting
+  # choice -- it only fills in the profile value when the caller left the
+  # knob at its default. The profile sets the internal path IDENTITY mode
+  # (`path_identity`) -- ".rfc3986_unreserved" (RURL-gjltzwmp) or
+  # ".whatwg_preserve" (RURL-bbmuehsx) -- which .normalize_path_vec() applies
+  # BEFORE the orthogonal public `path_encoding` presentation step. Presentation
+  # is un-governed (ADR 0011 / RURL-sjnqhwtl), so the profile never touches
+  # `opts$path_encoding`.
+  if (!is.null(opts$url_standard)) {
+    profile <- .URL_STANDARD_PROFILES[[opts$url_standard]]
+    opts$path_identity <- profile$path_identity
+    opts$path_normalization <- profile$path_normalization
+  }
+  # Profile-authorized normalization exceptions (ADR 0012 D6, lines 518-519):
+  # a named profile (e.g. `rfc-syntax`) may authorize keeping the path verbatim
+  # even under a url_standard that would normally govern it. These win over the
+  # expansion above. Only the profile path passes this argument, so the
+  # direct-user conflict matrix (ADR 0007) is untouched for scheme-selector
+  # calls -- the localization is that `profile_authorized` is NULL unless a
+  # named profile set it.
+  if (!is.null(profile_authorized)) {
+    for (knob in names(profile_authorized)) {
+      opts[[knob]] <- profile_authorized[[knob]]
+    }
+  }
+  # ADR 0012 D3 composition rule: "general" acceptance admits any syntactically
+  # valid scheme token but defers *interpretation* to url_standard, so it is
+  # meaningless without one. Enforced AFTER profile expansion / explicit
+  # override resolution so opts$url_standard is final. "web" composes freely
+  # with any url_standard (incl. NULL).
+  if (opts$scheme_acceptance == "general" && is.null(opts$url_standard)) {
+    stop(
+      "scheme_acceptance = \"general\" requires an explicit url_standard ",
+      "(\"rfc3986\" or \"whatwg\"); it is NULL.",
+      call. = FALSE
+    )
+  }
   opts
 }
 
-# Build the memoization cache key for one URL from validated options. Single
+# Build Stage A memoization cache keys for a vector of URLs from validated
+# options. Stage A is the option-INDEPENDENT parse core (RURL-dkwrebdt), so the
+# key covers ONLY the options that actually change that core: the two scheme
+# policies that decide what the web parser is handed (protocol_handling,
+# scheme_relative_handling), the www policy that shapes the post-www host fed to
+# the PSL decomposition (www_handling), and the PSL section (tld_source). Every
+# other option (case, trailing slash, index page, path normalization, path/host
+# encoding, subdomain levels, and ALL seven query options) is a pure Stage-B
+# presentation transform and is deliberately EXCLUDED, so profiles differing
+# only in presentation share one cache entry. In particular the query engine
+# (query_handling / params_keep / params_drop / sort_params /
+# empty_param_handling / params_case_sensitive / decode_plus) reads only the
+# cached raw query and shapes clean_url in Stage B, which is recomputed on every
+# call -- so there is no memoized clean_url to go stale and the query options
+# need not enter the key. (The PRD's self-delimiting cache-key serializer for
+# the vector query options predates the parse/present split (RURL-dkwrebdt) that
+# made clean_url a never-cached Stage-B output; it is obsolete here.) Single
 # source of the field set, order, separator, and Unicode escaping so the key
 # format cannot drift across call sites.
-.parse_cache_key <- function(url, opts) {
-  subdomain_key <- if (is.null(opts$subdomain_levels_to_keep)) {
-    "NULL"
-  } else {
-    as.character(opts$subdomain_levels_to_keep)
+# Stable cache-key token for the per-request pslr engine (RURL-mhibnqbd). The
+# Stage-A parse core caches the PSL decomposition (domain/TLD in both
+# spellings), so an engine that resolves those against a DIFFERENT Public Suffix
+# List MUST key a distinct cache entry -- otherwise a second call under another
+# engine would reuse the first engine's memoized domain/TLD (a silent
+# correctness bug). NULL (the session-global default) returns "" so the
+# no-engine key stays byte-identical to the pre-engine format (mirroring how
+# `opts$url_standard %||% ""` handles its NULL). A non-NULL engine is keyed by
+# its snapshot identity (the sha256 of the PSL list content), which is stable
+# across engine objects built from the same list -- so two engines over the
+# same list share a cache entry (correct: identical PSL output) while different
+# lists never collide. If a future pslr ever drops that field, fall back to the
+# matcher's external-pointer address: per-object-unique and stable for the
+# object's lifetime, so it can never produce a cross-engine stale hit (only
+# less cross-object sharing).
+.engine_cache_token <- function(engine) {
+  if (is.null(engine)) {
+    return("")
   }
-  cache_key <- paste(url, opts$protocol_handling, opts$www_handling,
-    opts$tld_source, opts$case_handling, opts$trailing_slash_handling,
-    opts$index_page_handling, opts$path_normalization,
-    opts$scheme_relative_handling, subdomain_key,
-    opts$host_encoding, opts$path_encoding,
-    sep = "\x1F"
+  id <- tryCatch(engine[["snapshot"]][["identity"]], error = function(e) NULL)
+  if (is.character(id) && length(id) == 1L && !is.na(id) && nzchar(id)) {
+    return(id)
+  }
+  paste0(
+    "engine-ptr:",
+    paste(utils::capture.output(print(engine[["matcher"]])), collapse = "")
   )
-  stringi::stri_escape_unicode(enc2utf8(cache_key))
 }
 
-# Internal scalar helper that handles caching and calls the implementation
-._safe_parse_url_scalar <- function(url,
-                                    protocol_handling,
-                                    www_handling,
-                                    tld_source,
-                                    case_handling,
-                                    trailing_slash_handling,
-                                    index_page_handling,
-                                    path_normalization,
-                                    scheme_relative_handling,
-                                    subdomain_levels_to_keep,
-                                    host_encoding,
-                                    path_encoding) {
-  # Early return for invalid input
+.parse_cache_keys <- function(urls, opts) {
+  # url_standard is Stage-A-affecting (RURL-luwvkwhd, PRD §5.1): it changes IP
+  # detection / host rejection / final host in Stage A, so it MUST enter the key
+  # or a second call under a different standard would return a stale cached host
+  # (AC #9). Option (a) from the PRD: one extra cache entry per URL per standard
+  # actually used. NULL maps to "" so the no-selector key is stable.
+  # scheme_policy is Stage-A-affecting (RURL-vzgeurae): under "require" it folds
+  # scheme-less host-shaped rows into the reject set, changing what is parsed
+  # (and whether a row survives at all). So it MUST enter the key, or a second
+  # call under a different policy would reuse a stale cached row.
+  # scheme_acceptance is Stage-A-affecting (ADR 0012 D3): under "web" a
+  # scheme-bearing input outside the curated allowlist is folded into the
+  # reject set in Phase 1, whereas "general" admits it. So it changes which
+  # rows survive Stage A and MUST enter the key, or a second call under a
+  # different acceptance would reuse a stale cached row.
+  # fixup_posture is Stage-A-affecting (RURL-jynceqrj, ADR 0012 Layer 6a):
+  # under "browser" the bounded string fixer rewrites the input (outer trim,
+  # `;`->`:`, `://` insertion) BEFORE the parser sees it, so a fixed parse
+  # produces a different parser input than the unfixed one. It MUST enter the
+  # key, or a
+  # fixed parse would collide with an unfixed cached row (PRD Part 1).
+  # engine is Stage-A-affecting (RURL-mhibnqbd): it resolves the memoized PSL
+  # decomposition against a specific list, so it MUST enter the key or a second
+  # call under a different engine would reuse a stale cached domain/TLD. NULL ->
+  # "" keeps the no-engine key byte-identical (see .engine_cache_token()).
+  cache_key <- paste(urls, opts$protocol_handling, opts$www_handling,
+    opts$tld_source, opts$scheme_relative_handling,
+    opts$url_standard %||% "", opts$scheme_policy, opts$scheme_acceptance,
+    opts$fixup_posture, .engine_cache_token(opts$engine),
+    sep = "\x1F"
+  )
+  # No enc2utf8()/escape here: enc2utf8() transcodes *from the session locale*,
+  # so the same URL could yield a different key under LC_ALL=C than under a
+  # UTF-8 session. The ASCII-safe, locale-invariant, injective rendering of a
+  # cache key is derived once in the cache layer itself (.cache_key_ascii(),
+  # zzz.R), which is the single seam every cache accessor goes through — so this
+  # key is returned as-is and never used as an environment name directly.
+  cache_key
+}
+
+# Internal scalar helper that handles caching and calls the shared cached
+# vector path (n = 1). Receives the validated `opts` list (from
+# .parse_options()) and reuses it directly. Returns NULL for a NULL-equivalent
+# row (invalid / rejected / parse failure) or the row as a named list
+# (byte-identical to the historical .assemble_parse_result() output).
+._safe_parse_url_scalar <- function(url, opts) {
+  # Early return for invalid input (never cached, matching the historical
+  # scalar pipeline that returned NULL for these before touching the cache).
   if (is.na(url) || !is.character(url) || url == "") {
     return(NULL)
   }
 
-  # Generate cache key. opts is reassembled locally here; threading it down
-  # from the public functions is deferred (see RURL-zovqibtt stage 4).
-  cache_key <- .parse_cache_key(url, list(
-    protocol_handling = protocol_handling,
-    www_handling = www_handling,
-    tld_source = tld_source,
-    case_handling = case_handling,
-    trailing_slash_handling = trailing_slash_handling,
-    index_page_handling = index_page_handling,
-    path_normalization = path_normalization,
-    scheme_relative_handling = scheme_relative_handling,
-    subdomain_levels_to_keep = subdomain_levels_to_keep,
-    host_encoding = host_encoding,
-    path_encoding = path_encoding
-  ))
+  # Scalar parse is the n = 1 case of the shared cached vector path, so the
+  # per-URL cache behavior comes from the same code as safe_parse_urls().
+  cols <- ._parse_urls_cached(url, opts)
+  if (attr(cols, "null_row")[1L]) {
+    return(NULL)
+  }
+  field_names <- vapply(.spu_result_fields, function(f) f$name, character(1))
+  # Same opaque-path authority mask the vector table applies, so the scalar and
+  # vector parse surfaces stay identical (see .mask_opaque_authority).
+  cols <- .mask_opaque_authority(cols, opts, url)
+  lapply(cols[field_names], function(column) column[[1L]])
+}
 
-  # Check cache
-  cached <- .cache_get("full_parse", cache_key)
-  if (!identical(cached, .rurl_cache_sentinel)) {
-    return(cached)
+# Shared cached vector parse path for safe_parse_url() (n = 1) and
+# safe_parse_urls(). `parse_input` is a character vector (NA marks elements the
+# caller could not coerce to a parseable string). Returns the list of 14 columns
+# named by .spu_result_fields (canonical order) plus a `null_row` logical
+# attribute -- the rows the scalar pipeline would have returned NULL for.
+#
+# Parse/present split (RURL-dkwrebdt): the full_parse cache stores STAGE A --
+# the option-independent parse core (raw components, IP detection, post-www
+# host, and the PSL decomposition in both spellings) -- keyed by
+# url x protocol x www x tld_source x scheme_relative only. STAGE B
+# (._parse_stage_b_vec) then derives the 14 presented columns from the cached
+# Stage A plus the presentation options and is NEVER cached. So two accessor
+# profiles that differ only in presentation (case, path handling, host_encoding
+# spelling, subdomain levels, ...) share one cache entry and re-run only the
+# cheap Stage B: the expensive parse + PSL work is done once per URL regardless
+# of how many option profiles ask for it.
+#
+# Cache mechanics mirror the previous full-result cache: keyed/stored at the
+# UNIQUE-URL level (one batch lookup, misses computed once, all rows expanded
+# via match()); each value is either an unnamed Stage A field list
+# (.spu_stage_a_fields order) or NULL for a null row, so NULL-caching semantics
+# hold and hit reconstruction is a builtin `[[` gather. NA / "" inputs are null
+# rows and are NEVER cached, so cache-entry counts still reflect real unique
+# URLs only.
+._parse_urls_cached <- function(parse_input, opts) {
+  a_fields <- vapply(.spu_stage_a_fields, function(f) f$name, character(1))
+  n_a_fields <- length(.spu_stage_a_fields)
+  # BEFORE unique(): neutralizing here rather than on `uniq` is what keeps the
+  # `match(parse_input, uniq)` expansion below in step. Neutralizing the unique
+  # vector would leave the input vector holding bytes the unique vector no
+  # longer contains, and every row would gather from the wrong position.
+  parse_input <- .neutralize_bytes_input(parse_input)
+  uniq <- unique(parse_input)
+  m <- length(uniq)
+
+  # Only a real URL string (non-NA, non-empty) participates in the cache.
+  cacheable <- !is.na(uniq) & nzchar(uniq)
+  keys <- rep(NA_character_, m)
+  if (any(cacheable)) {
+    keys[cacheable] <- .parse_cache_keys(uniq[cacheable], opts)
   }
 
-  # Call the implementation
-  result <- ._safe_parse_url_impl(
-    url = url,
-    protocol_handling = protocol_handling,
-    www_handling = www_handling,
-    tld_source = tld_source,
-    case_handling = case_handling,
-    trailing_slash_handling = trailing_slash_handling,
-    index_page_handling = index_page_handling,
-    path_normalization = path_normalization,
-    scheme_relative_handling = scheme_relative_handling,
-    subdomain_levels_to_keep = subdomain_levels_to_keep,
-    host_encoding = host_encoding,
-    path_encoding = path_encoding
+  # Batch cache lookup over the cacheable keys.
+  cached <- rep(list(.rurl_cache_sentinel), m)
+  if (any(cacheable)) {
+    cached[cacheable] <- .cache_get_many("full_parse", keys[cacheable])
+  }
+  hit <- !vapply(cached, identical, logical(1), .rurl_cache_sentinel)
+
+  # Unique-level Stage A columns, initialized to the null-row defaults.
+  a_uniq <- lapply(.spu_stage_a_fields, function(f) rep(f$default, m))
+  names(a_uniq) <- a_fields
+  null_uniq <- rep(TRUE, m)
+
+  # Fill cache hits. A hit value is an unnamed Stage A field list; null-ness is
+  # carried by the `null_row` FIELD rather than by a NULL value, so a null row's
+  # classifier flags survive the round trip (see .spu_stage_a_fields). A legacy
+  # NULL value is still tolerated -- it simply keeps the defaults, which is what
+  # it always meant. Fields are gathered one at a time with the builtin `[[`, so
+  # reconstruction avoids a closure per hit.
+  if (any(hit)) {
+    hit_idx <- which(hit)
+    is_null_hit <- vapply(cached[hit_idx], is.null, logical(1))
+    null_uniq[hit_idx] <- is_null_hit
+    nn_idx <- hit_idx[!is_null_hit]
+    if (length(nn_idx) > 0L) {
+      nn_vals <- cached[nn_idx]
+      for (j in seq_len(n_a_fields)) {
+        a_uniq[[j]][nn_idx] <- vapply(
+          nn_vals, `[[`, .spu_stage_a_fields[[j]]$template, j
+        )
+      }
+      null_uniq[nn_idx] <- a_uniq$null_row[nn_idx]
+    }
+  }
+
+  # Compute Stage A for the misses (includes NA / "" inputs, which the engine
+  # turns into null rows) and populate their columns.
+  need_idx <- which(!hit)
+  if (length(need_idx) > 0L) {
+    a_cols <- ._parse_stage_a_vec(uniq[need_idx], opts)
+    null_uniq[need_idx] <- attr(a_cols, "null_row")
+    for (nm in a_fields) {
+      a_uniq[[nm]][need_idx] <- a_cols[[nm]]
+    }
+
+    # Store the freshly computed, cacheable Stage A rows as the unnamed field
+    # list -- INCLUDING null rows, whose `null_row` field marks them and whose
+    # classifier flags the layered verdicts need. NA / "" are never cached.
+    store_idx <- need_idx[cacheable[need_idx]]
+    if (length(store_idx) > 0L) {
+      store_vals <- lapply(store_idx, function(i) {
+        unname(lapply(a_uniq, `[[`, i))
+      })
+      .cache_set_many("full_parse", keys[store_idx], store_vals)
+    }
+  }
+
+  # Stage B: derive the 14 presented columns from the unique Stage A rows plus
+  # the presentation options. Runs on every call (never cached); web_ok is the
+  # complement of the null rows.
+  cols_uniq <- ._parse_stage_b_vec(a_uniq, uniq, !null_uniq, opts)
+  # The layered verdicts ride out of Stage B on an attribute (never a column --
+  # ADR 0006). They are deliberately NOT reset for null rows below: a null row's
+  # verdicts are already the correct ones (L1 `fail`, or L2 `rejected-scheme`
+  # for a row the web admission gate demoted), and that pair is exactly what
+  # `get_parse_verdicts()` exists to tell apart.
+  verdicts_uniq <- attr(cols_uniq, "verdicts")
+
+  # Null rows collapse to the all-default "error" row (original_url is left as
+  # the unique input and restored per row by the caller). This matches the tail
+  # of the previous single-stage engine.
+  if (any(null_uniq)) {
+    for (f in .spu_result_fields) {
+      if (f$name == "original_url") {
+        next
+      }
+      cols_uniq[[f$name]][null_uniq] <- f$default
+    }
+  }
+
+  # Expand the unique rows back to every input position.
+  pos <- match(parse_input, uniq)
+  field_names <- vapply(.spu_result_fields, function(f) f$name, character(1))
+  cols <- lapply(cols_uniq, function(col) col[pos])
+  names(cols) <- field_names
+  attr(cols, "null_row") <- null_uniq[pos]
+  attr(cols, "verdicts") <- lapply(verdicts_uniq, function(col) col[pos])
+  cols
+}
+
+# Neutralize bytes-marked input to NA before it can reach any string operation.
+#
+# `Encoding(x) <- "bytes"` is R's declaration that a value is NOT text, and
+# stringi honors it by refusing such a string WHOLESALE: `stri_escape_unicode()`
+# inside `.cache_key_ascii()` throws "bytes encoding is not supported by this
+# function" before the parse has even begun. That throw took the entire
+# vectorized call with it -- `get_host()` over 1000 URLs lost all 1000 because
+# one row carried a bytes mark (RURL-jttoigtc). Same broken promise as
+# RURL-kmpnbvdl, at a different seam and with a different trigger: kmpnbvdl's
+# guards scope on `validUTF8()` and on `Encoding()` being "UTF-8"/"latin1", and
+# a "bytes" mark is neither, so they never see this row.
+#
+# NA, not a repair. There is no locale-free reading of a value whose author has
+# declared it is not text, so `error` is the correct VERDICT here -- it is only
+# the THROW that is wrong. Mapping to NA puts the row on the existing null-row
+# path, where it reports `parse_status` "error" exactly like NA and "" input,
+# and it costs no new column or field (ADR 0006).
+#
+# Deliberately NOT applied to `original_url`: safe_parse_urls() restores that
+# column from the untouched input vector, so the caller still gets their own
+# bytes back in the echo and can see WHICH row was refused.
+#
+# Idempotent and O(n) in C, so calling it at more than one seam is cheap. It has
+# to be called at more than one, and that is MEASURED rather than assumed:
+# `.mask_opaque_authority()` is a SIBLING consumer of the same input vector, not
+# a caller of this funnel, and it walks the whole vector through
+# `.has_explicit_authority()`'s `stri_replace_first_regex()` as soon as any one
+# row is `mailto:`. With only the funnel guarded,
+#
+#   safe_parse_urls(c("mailto:a@b.com", <bytes row>),
+#                   scheme_acceptance = "general", url_standard = "whatwg")
+#
+# still threw. Note the shape of that reproducer: it is a CONJUNCTION (a mailto
+# row AND a bytes row AND `scheme_acceptance = "general"`), and it fires on
+# `safe_parse_urls()` but NOT on `get_host()`, which reaches the mask by a path
+# the mailto branch does not arm. A one-input-at-a-time probe on the accessors
+# scores the funnel-only fix as complete.
+.neutralize_bytes_input <- function(url) {
+  bytes <- Encoding(url) == "bytes"
+  if (any(bytes)) {
+    url[bytes] <- NA_character_
+  }
+  url
+}
+
+# The scheme as the prepared input SPELLS it, for the rows where that token is
+# the scheme the parse settled on (RURL-gkmwqpos, RUL-007). `final_scheme` is
+# the ASCII-lowercased classification token; this is its source spelling,
+# which RFC 3986 sec 6.2.2.1 treats as un-normalized and which only
+# `serialize_url(form = "source")` renders. Falls back to `final_scheme` where
+# the prepared input carries no scheme token, where the token differs from the
+# settled scheme other than by case (a fabricated `http://` prefix over a
+# host-port input, a scheme-relative rewrite), or where `final_scheme` is NA --
+# so the spelling can never name a scheme the parse did not find.
+.source_scheme_spelling_vec <- function(prepared, final_scheme) {
+  out <- final_scheme
+  ok <- !is.na(final_scheme) & !is.na(prepared)
+  if (!any(ok)) {
+    return(out)
+  }
+  token <- stringi::stri_match_first_regex(
+    prepared[ok], "^([A-Za-z][A-Za-z0-9+.\\-]*):"
+  )[, 2L]
+  same <- !is.na(token) & .ascii_tolower(token) == final_scheme[ok]
+  idx <- which(ok)[same]
+  out[idx] <- token[same]
+  out
+}
+
+# Stage A (vector): the option-INDEPENDENT parse core (RURL-dkwrebdt). Runs the
+# expensive, presentation-independent phases -- scheme detection + parser input
+# prep (1), the parse and raw-component extraction (2), final-scheme policy
+# (4), IP detection (5), the www-prefix policy that shapes the host (6), and the
+# registered-domain / TLD derivation (7) computed in BOTH the ascii and unicode
+# spellings so host_encoding stays a Stage-B choice. Returns the Stage A columns
+# named by .spu_stage_a_fields plus a `null_row` attribute (invalid input,
+# phase-1 rejection, or parse failure). Its output for a given URL depends only
+# on opts$protocol_handling / www_handling / tld_source /
+# scheme_relative_handling (the full_parse cache key), so it is memoized once
+# and reused across every presentation profile.
+._parse_stage_a_vec <- function(urls, opts) {
+  n <- length(urls)
+
+  # Input-level validity: parseable only if a non-NA, non-empty character
+  # scalar (callers map non-character input to NA before the engine).
+  valid <- !is.na(urls) & nzchar(urls)
+
+  # Phase 1: scheme detection and parser-input preparation. url_standard is
+  # passed
+  # so the host-shape gate parses numeric IPv4 attempts faithfully instead of
+  # rejecting them under a selector (RURL-luwvkwhd).
+  prep <- .prepare_urls_for_parse_vec(
+    urls, opts$protocol_handling, opts$scheme_relative_handling,
+    opts$url_standard, opts$scheme_policy, opts$scheme_acceptance,
+    opts$fixup_posture
   )
 
-  # Cache the result
-  .cache_set("full_parse", cache_key, result)
+  # ADR 0012 Layer 4b-2 (RURL-qbnelzku): general-acceptance routing. Under
+  # scheme_acceptance == "general", `.general_parse_vec` decomposes the
+  # opaque / non-special-authority / RFC-generic / RFC-8089-file rows the
+  # posture routes OFF the web route. A pure no-op under "web" (empty mask, NA
+  # columns), so `general_route` is empty and every web-route vector below
+  # stays bit-identical -- byte-identity by construction. These rows are cut
+  # from web_parseable and their components installed directly (mirroring the
+  # whatwg_file / rfc3986_path_rootless blocks). Rows the gate/parser rejects
+  # (gen$ok = FALSE) simply never join parse_ok, so they present as errors.
+  #
+  # The general route gets the SAME WHATWG step-1 treatment the web route
+  # already had: remove every ASCII tab/LF/CR before anything is parsed. That
+  # step is scheme-independent in WHATWG, but it lived only inside
+  # `._prepare_urls_vec` (parse-phases.R), so the rows routed off the web route
+  # were still handed the raw string -- `foo://ho<TAB>st/` kept the tab and
+  # percent-encoded it into the host, and `foo://ho<LF>st/` was rejected
+  # outright (RURL-lsgdeisl). Only the strip is applied here, deliberately NOT
+  # the rest of `prep`: browser fixup and special-scheme backslash rewriting are
+  # separate rules that must not start firing on non-special schemes. A
+  # byte-for-byte no-op unless url_standard == "whatwg".
+  gen_input <- .strip_whatwg_control_chars_vec(urls, opts$url_standard)$url
+  gen <- .general_parse_vec(gen_input, opts$url_standard,
+                            opts$scheme_acceptance, opts$scheme_policy)
+  general_route <- valid & gen$general_parsed
 
-  result
+  # Phase 2: the web parse (the only per-URL loop) over the surviving rows.
+  parseable <- valid & !prep$rejected
+  rfc3986_path_rootless <- parseable & prep$rfc3986_path_rootless
+  whatwg_file <- parseable & prep$whatwg_file
+  web_parseable <- parseable & !rfc3986_path_rootless & !whatwg_file &
+    !general_route
+  # Splitting the authority at the LAST "@" is the WHATWG authority state, so it
+  # is on for exactly that standard. NOT for `rfc3986`, which rejects a repeated
+  # raw "@" (P2.1 C-03; test-url-standard-authority.R), and not for the
+  # no-selector baseline.
+  #
+  # The deleted pre-parse repair was gated `!is.null(url_standard)` instead, and
+  # reproducing that here WIDENS `rfc3986` by 165 rows of the at-sweep corpus.
+  # The reason is worth recording: the repair's regex needed a literal "//", so
+  # it never fired on a THREE-slash URL, and `http:///u@@h.com/p` was rejected
+  # by the parser. The uniform RFC gate does not catch that shape -- it judges
+  # the raw input, where "@" is a perfectly legal pchar in the path
+  # `/u@@h.com/p` -- so the parser was the only thing rejecting it. Moving the
+  # split into the parser under the wider gate would have handed `rfc3986` the
+  # recovery RURL-qrfrvmkg took away.
+  last_at <- .is_whatwg(opts$url_standard)
+  # The host's percent-decode order, per selected standard (RURL-rgjpcbuk).
+  # This used to be compensated for in front of the parser, by masking every
+  # host triplet as filler and substituting the profile's spelling back
+  # afterwards; the parser owns it now. See `host_pct` in R/parse-web.R.
+  host_pct <- .web_host_pct_policy(opts$url_standard)
+  # Which LITERAL host bytes the selected standard admits (RURL-ezhzpkhg
+  # deletion 1, ADR 0013 superseding ADR 0009). Compensated for in front of the
+  # parser until now as well, by substituting filler for the gap bytes and
+  # restoring the true host once the structure had been read. See
+  # `host_charset` in R/parse-web.R.
+  host_charset <- .web_host_charset_policy(opts$url_standard)
+  # Whether an unwritable byte outside the authority is refused or escaped
+  # (RURL-ezhzpkhg deletion 5). This used to be a SECOND parse: Phase 1 kept a
+  # copy of the input respelled with the WHATWG encode sets, and a row that
+  # failed the first attempt was re-parsed from that copy. See `pqf_bytes` in
+  # R/parse-web.R for why a retry-on-failure cannot express the rule.
+  pqf_bytes <- .web_pqf_policy(opts$url_standard)
+  # Whether the accepted query/fragment are stored as the source spelled them
+  # (RURL-gkmwqpos, RUL-007). See `pqf_source` in R/parse-web.R: under
+  # `rfc3986` sec 6.2.2.1's hex-case fold is the `normalized` serializer's job.
+  pqf_source <- .web_pqf_source_policy(opts$url_standard)
+  # Which host tokens read as an IPv4 address (RURL-ezhzpkhg deletion 4). The
+  # last of the compensations: a Phase-1 rewrite canonicalized WHATWG-valid IPv4
+  # hosts in the URL STRING so the old engine could read the rest of it. See
+  # `host_ipv4` in R/parse-web.R for what its regex gate cost.
+  host_ipv4 <- .web_host_ipv4_policy(opts$url_standard)
+  # What an ABSENT path after the authority parses to (RURL-epoinamh). See
+  # `empty_path` in R/parse-web.R for why the sec 6.2.3 "/" is a normalization
+  # and not a parse step.
+  empty_path <- .web_empty_path_policy(opts$url_standard)
+  # Whether a well-formed triplet's DECODED octet must also be an admissible
+  # literal host byte (RURL-crrgaiel). See `host_pct_octets` in R/parse-web.R:
+  # RFC 3986 sec 3.2.2 places no condition on what `pct-encoded` denotes, so
+  # `rfc3986` judges the raw token and leaves the octet encoded.
+  host_pct_octets <- .web_host_pct_octets_policy(opts$url_standard)
+  port_range <- .web_port_range_policy(opts$url_standard)
+  parsed_list <- vector("list", n)
+  parse_idx <- which(web_parseable)
+  if (length(parse_idx) > 0L) {
+    parsed_list[parse_idx] <- lapply(
+      prep$url_to_parse[parse_idx], .parse_web_url_one,
+      last_at_userinfo = last_at, host_pct = host_pct, pqf_bytes = pqf_bytes,
+      host_charset = host_charset, host_ipv4 = host_ipv4,
+      empty_path = empty_path, host_pct_octets = host_pct_octets,
+      port_range = port_range, pqf_source = pqf_source
+    )
+  }
+  web_ok <- web_parseable & !vapply(parsed_list, is.null, logical(1))
+  file_parse <- .parse_whatwg_file_urls_vec(
+    prep$whatwg_file_input[whatwg_file], prep$backslash_rewritten[whatwg_file]
+  )
+  file_ok <- rep(FALSE, n)
+  file_ok[whatwg_file] <- file_parse$ok
+  # General-acceptance rows that parsed successfully (incl. the RFC gate).
+  general_ok <- general_route & gen$ok
+  parse_ok <- web_ok | rfc3986_path_rootless | file_ok | general_ok
+  # UNIFORM RFC 3986 generic-URI gate (RURL-qrfrvmkg, adopting RURL-pfewxbhb
+  # Option (a)). Applied at the ONE point every route has already converged on,
+  # so the profile is a property of the SELECTED STANDARD rather than of which
+  # parser happened to own the row: the web route (http/https/ftp/ftps), the
+  # path-rootless slice, the RFC 8089 `file:` overlay and the general-routed
+  # opaque/RFC rows all meet the same grammar. Before this, only the last two
+  # did -- `file://C|/x` errored while `http://a|b/` parsed, though '|' is in no
+  # RFC 3986 production. Path-rootless is INCLUDED deliberately: `path-rootless`
+  # is itself an RFC 3986 production, so a row admitted under it has no claim to
+  # skip the grammar that defines it.
+  #
+  # The mask is all-TRUE under `whatwg` and under the NULL no-selector default,
+  # so every non-rfc3986 output is bit-identical. `.parse_cache_keys()` already
+  # carries `url_standard`, so no cross-standard cache entry can go stale.
+  parse_ok <- parse_ok &
+    .rfc3986_uniform_gate_ok(prep$rfc_gate_input, opts$url_standard)
+  null_row <- !parse_ok
+
+  # Pull raw components into columns (mirrors .extract_raw_components() and the
+  # port/fragment/user/password fields of .assemble_parse_result(), using `$`
+  # exactly as the scalar code does).
+  raw_scheme <- vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$scheme %||% NA_character_
+  }, character(1), USE.NAMES = FALSE)
+  raw_host <- vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$host %||% NA_character_
+  }, character(1), USE.NAMES = FALSE)
+  # The host shim's restore step used to run here (RURL-dxwxeamq /
+  # RURL-rgjpcbuk): for rows Phase 1 had masked, the parser's `$host` was
+  # filler and the profile-correct host was substituted back before IP
+  # detection and the host model. Both halves of that shim are gone
+  # (RURL-ezhzpkhg deletions 1 and 2, ADR 0013), so `$host` is already the
+  # profile-correct host and there is nothing to restore.
+  #
+  # `host-charset-shimmed` (ADR 0006/0009) survives the shim it was named
+  # after, because it always described the RESULTING HOST rather than the layer
+  # that admitted it: TRUE where a WHATWG parse produced a host carrying one of
+  # the 15 `.WEB_HOST_GAP_BYTES` code points (R/parse-web.R, which records what
+  # each was frozen from). Derived from the parsed host, so
+  # it covers both spellings -- `%60` decodes to "`" under `host_pct =
+  # "decode"` and reads identically to a literal one.
+  host_charset_shimmed <- rep(FALSE, n)
+  if (.is_whatwg(opts$url_standard) && any(web_ok)) {
+    host_charset_shimmed[web_ok] <- vapply(
+      raw_host[web_ok],
+      function(h) {
+        !is.na(h) && any(.web_bytes(h) %in% .WEB_HOST_GAP_BYTES)
+      },
+      logical(1), USE.NAMES = FALSE
+    )
+  }
+  # Path is re-derived from the prepared input (not the parser's normalized
+  # $path) so
+  # dot segments survive to path_normalization; see .extract_raw_path_vec().
+  engine_path <- vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$path %||% NA_character_
+  }, character(1), USE.NAMES = FALSE)
+  raw_path <- engine_path
+  if (any(web_ok)) {
+    raw_path[web_ok] <- .extract_raw_path_vec(
+      prep$url_to_parse[web_ok], engine_path[web_ok], pqf_bytes
+    )
+  }
+  # query/fragment/userinfo are taken from the parser as-is. Whether the
+  # parser's query/fragment ARE the source bytes is `pqf_source`'s question
+  # (R/parse-web.R, RUL-007, RUL-015): under `rfc3986` they are stored as
+  # written, so an existing "%xx" keeps its hex case and a raw byte >= 0x80
+  # stays raw, exactly as the re-derived path does; under `whatwg` and the
+  # no-selector default they carry the component pass's normalized spelling
+  # (bytes >= 0x80 encoded, "%XX" uppercased).
+  # .blank_to_na() maps a present-but-empty "" component to NA, which is where
+  # the long-shipped "empty component == absent" behavior is enforced (see
+  # .blank_to_na in utils.R).
+  raw_query <- .blank_to_na(vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$query %||% NA_character_
+  }, character(1), USE.NAMES = FALSE))
+  raw_fragment <- .blank_to_na(vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$fragment %||% NA_character_
+  }, character(1), USE.NAMES = FALSE))
+  raw_user <- .blank_to_na(vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$user %||% NA_character_
+  }, character(1), USE.NAMES = FALSE))
+  raw_password <- .blank_to_na(vapply(parsed_list, function(p) {
+    if (is.null(p)) NA_character_ else p$password %||% NA_character_
+  }, character(1), USE.NAMES = FALSE))
+  # Whether the parsed authority carried a userinfo DELIMITER (RUL-001). Read
+  # off the parser, not off `raw_user`: .parse_web_url_one() returns a non-NULL
+  # (possibly empty) `user` exactly when an "@" split the authority, and the
+  # .blank_to_na() above is what turns the empty `http://@host/` and
+  # `http://:@host/` credentials into NA. The general route is filled in below
+  # from `gen$userinfo` before ITS .blank_to_na() for the same reason.
+  authority_userinfo <- vapply(parsed_list, function(p) {
+    !is.null(p) && !is.null(p$user)
+  }, logical(1), USE.NAMES = FALSE)
+  # Which rows carry a userinfo that was actually SPLIT into a username and a
+  # password. The web route always splits, so it is TRUE wherever that
+  # route produced credentials; the general route sets it per row below. The
+  # WHATWG userinfo percent-encode set keys off this and nothing else, because
+  # encoding an UNDIVIDED userinfo would render its structural ":" as "%3A"
+  # (RURL-micalqvh half b, RURL-ovpguvva).
+  general_userinfo_split <- rep(FALSE, length(raw_user))
+  raw_port <- vapply(parsed_list, function(p) {
+    if (is.null(p)) {
+      NA_integer_
+    } else {
+      suppressWarnings(as.integer(p$port %||% NA_integer_))
+    }
+  }, integer(1), USE.NAMES = FALSE)
+
+  if (any(whatwg_file)) {
+    raw_scheme[whatwg_file] <- "file"
+    raw_host[whatwg_file] <- file_parse$host
+    raw_path[whatwg_file] <- file_parse$path
+    raw_query[whatwg_file] <- file_parse$query
+    raw_fragment[whatwg_file] <- file_parse$fragment
+    raw_user[whatwg_file] <- NA_character_
+    raw_password[whatwg_file] <- NA_character_
+    authority_userinfo[whatwg_file] <- FALSE
+    raw_port[whatwg_file] <- NA_integer_
+  }
+
+  if (any(rfc3986_path_rootless)) {
+    raw_scheme[rfc3986_path_rootless] <-
+      prep$rfc3986_path_rootless_scheme[rfc3986_path_rootless]
+    raw_host[rfc3986_path_rootless] <- NA_character_
+    raw_path[rfc3986_path_rootless] <-
+      prep$rfc3986_path_rootless_path[rfc3986_path_rootless]
+    raw_query[rfc3986_path_rootless] <-
+      prep$rfc3986_path_rootless_query[rfc3986_path_rootless]
+    raw_fragment[rfc3986_path_rootless] <-
+      prep$rfc3986_path_rootless_fragment[rfc3986_path_rootless]
+  }
+
+  # ADR 0012 Layer 4b-2: install the general-routed components. host is the
+  # posture host verbatim (opaque UTF-8 %-encoded / RFC source-preserving,
+  # never punycode -- ADR 0002); query/fragment go through .blank_to_na so the
+  # public columns keep the empty->NA contract (the empty-vs-absent distinction
+  # is recovered in Stage B via `.general_parse_vec` for serialization).
+  if (any(general_ok)) {
+    raw_scheme[general_ok] <- gen$scheme[general_ok]
+    raw_host[general_ok] <- gen$host[general_ok]
+    raw_path[general_ok] <- gen$path[general_ok]
+    raw_query[general_ok] <- .blank_to_na(gen$query[general_ok])
+    raw_fragment[general_ok] <- .blank_to_na(gen$fragment[general_ok])
+    # Credentials (RURL-ovpguvva). `gen$userinfo_kind` says which parser the
+    # row's userinfo came from, so the rule is read off the parse rather than
+    # re-derived from the scheme here:
+    #   * "authority" -- a WHATWG authority userinfo. SPLIT at the FIRST ":"
+    #     into username / password, exactly as the authority state does. Before
+    #     this the opaque parser dropped userinfo entirely, so `sc://u:p@h/x`
+    #     reported NA credentials while the web route reported them exactly.
+    #   * "rfc8089"   -- the `file:` overlay's `[ userinfo "@" ]`, UNDIVIDED by
+    #     production. App. E.1 warns a password there is "a serious security
+    #     exposure", so rurl does not manufacture a split the RFC never draws.
+    # These are the RAW source slices in both cases; the WHATWG userinfo
+    # percent-encode set is applied later, and only to the split rows, so a
+    # structural ":" is never rendered as "%3A".
+    # Delimiter presence is read BEFORE .blank_to_na(): `sc://@h/` carries an
+    # empty userinfo, which is still a userinfo delimiter (RUL-001).
+    authority_userinfo[general_ok] <- !is.na(gen$userinfo[general_ok])
+    gen_ui <- .blank_to_na(gen$userinfo[general_ok])
+    gen_split <- !is.na(gen_ui) &
+      !is.na(gen$userinfo_kind[general_ok]) &
+      gen$userinfo_kind[general_ok] == "authority"
+    gen_pw <- rep(NA_character_, length(gen_ui))
+    if (any(gen_split)) {
+      colon <- regexpr(":", gen_ui[gen_split], fixed = TRUE)
+      has_colon <- colon > 0L
+      ui <- gen_ui[gen_split]
+      pw <- rep(NA_character_, length(ui))
+      pw[has_colon] <- substring(ui[has_colon], colon[has_colon] + 1L)
+      ui[has_colon] <- substring(ui[has_colon], 1L, colon[has_colon] - 1L)
+      gen_ui[gen_split] <- .blank_to_na(ui)
+      gen_pw[gen_split] <- .blank_to_na(pw)
+    }
+    raw_user[general_ok] <- gen_ui
+    raw_password[general_ok] <- gen_pw
+    general_userinfo_split[general_ok] <- gen_split
+    raw_port[general_ok] <- suppressWarnings(as.integer(gen$port[general_ok]))
+  }
+
+  # ADR 0012 D7: a mailto: URL carries recipient addr-specs, not a URL
+  # authority. Expose the FIRST recipient's domain as `host` (so get_host /
+  # get_domain / get_tld / get_subdomain decompose it exactly like a web host)
+  # and its local-part as `user`. Extraction metadata ONLY: Stage B serializes
+  # the general rows from its own gen_b re-parse (host NA for mailto), so
+  # clean_url / round-trip is untouched. Domain-form RHS only; address-literal /
+  # invalid -> NA host.
+  #
+  # The recipient rule applies ONLY to the opaque-path form. `mailto://host/p`
+  # is a non-special scheme carrying a real `//` authority, so the general
+  # parser has already put its host in `raw_host` above; running the recipient
+  # decomposition over its path clobbered that with NA (no addr-spec in `/p`),
+  # leaving a row with a parsed `port` and no `host`. WPT's
+  # `mailto://example.com:8080/pathname?search#hash` expects hostname
+  # `example.com` (RURL-gmzipkyw).
+  is_mailto_gen <- general_ok & !is.na(raw_scheme) &
+    .ascii_tolower(raw_scheme) == "mailto" &
+    !.has_explicit_authority(urls, opts$url_standard)
+  if (any(is_mailto_gen)) {
+    rp <- .mailto_first_recipient_parts(raw_path[is_mailto_gen])
+    raw_host[is_mailto_gen] <- rp$host
+    raw_user[is_mailto_gen] <- rp$user
+  }
+
+  # Every host source (web route, shim restore, `file:`, the general/opaque
+  # parser,
+  # mailto) has merged into `raw_host` by here, so this is the single vector-
+  # path chokepoint at which the host's encoding can be declared once for all
+  # downstream consumers (`pslr`, `punycoder::host_normalize()`).
+  raw_host <- .mark_host_utf8(raw_host)
+
+  # Phase 4: final scheme per protocol policy.
+  final_scheme <- .derive_final_scheme_vec(
+    opts$protocol_handling, prep$looks_like_protocol, raw_scheme
+  )
+  # The scheme AS SPELLED (RURL-gkmwqpos, RUL-007). Every route ASCII-lowercases
+  # `raw_scheme` -- the web parser at its scheme production, the general parser
+  # in `.general_parse_vec()` -- and every classifier downstream keys off that
+  # folded token, so `final_scheme` keeps it. But RFC 3986 sec 6.2.2.1 makes
+  # scheme case folding a NORMALIZATION, which `serialize_url(form = "source")`
+  # must not apply; it reads the spelling back from here, the same way the
+  # host's source spelling is carried since RURL-xkhbhaje. Read off the
+  # prepared input, and only where the token there IS the scheme the parse
+  # settled on (a fabricated `http://` prefix or a demoted token falls back to
+  # `final_scheme`), so a disagreeing pair never emits a scheme the parse did
+  # not find.
+  source_scheme <- .source_scheme_spelling_vec(prep$url_to_parse, final_scheme)
+
+  # Phase 5: IP host detection (on the parsed host, which may be a coerced
+  # IPv4).
+  is_ip_host <- .detect_ip_host_vec(raw_host)
+  is_ip_pre_model <- is_ip_host
+
+  # Phase 5b: url_standard host IPv4/reg-name model (RURL-luwvkwhd). No-op when
+  # url_standard is NULL. Under a selector it restores the RFC reg-name spelling
+  # (or keeps the parser's WHATWG coercion) and marks WHATWG-fatal numeric
+  # hosts,
+  # which are folded into the null-row set so they present as parse errors.
+  model <- .apply_host_standard_model_vec(
+    prep$input_host, raw_host, is_ip_host, opts$url_standard,
+    prep$is_ipv4_attempt
+  )
+  model_host <- model$host
+  is_ip_host <- model$is_ip
+  # The web host model must never touch a general-routed host (parsed by
+  # the posture opaque/RFC parser instead): restore its host + IP verdict
+  # and exempt it from the model's WHATWG-fatal reject.
+  general_acceptance <- identical(opts$scheme_acceptance, "general")
+  if (general_acceptance && any(general_route)) {
+    model_host[general_route] <- raw_host[general_route]
+    is_ip_host[general_route] <- is_ip_pre_model[general_route]
+    null_row <- null_row | (model$fatal & !general_route)
+  } else {
+    null_row <- null_row | model$fatal
+  }
+
+  # Phase 6: www-prefix policy shapes the host fed to the PSL decomposition.
+  final_host <- .apply_www_policy_vec(
+    model_host, opts$www_handling, is_ip_host, opts$engine
+  )
+  # ADR 0012 D2 (the one edit inside the cached Stage-A path): a general
+  # non-special / opaque / reg-name / empty host does NOT get www-stripping.
+  # Empty mask under "web", so a strict no-op for every web/special row.
+  if (general_acceptance && any(general_route)) {
+    final_host[general_route] <- model_host[general_route]
+  }
+
+  # Phase 7: registered-domain and TLD derivation (batched pslr calls), computed
+  # in BOTH spellings. "idna" forces ascii A-labels and "unicode" forces
+  # decoded Unicode for every eligible host, so Stage B can reproduce every
+  # host_encoding spelling (keep / idna / unicode) by SELECTING between the two
+  # columns per row -- no further pslr call. host_is_ace drives the per-host
+  # choice for the "keep" spelling, mirroring .derive_domain_tld_vec()'s own
+  # logic exactly.
+  # ADR 0012 D2: a general non-special / opaque / reg-name / empty host is NOT
+  # asserted to be a DNS name -- force its PSL input to NA so domain/tld resolve
+  # to NA and the host never enters the pslr / punycode helpers (ADR 0002).
+  # `psl_host` masks ONLY the general-routed rows; `final_host` (the public host
+  # column) keeps the opaque host verbatim. Empty mask under "web".
+  psl_host <- final_host
+  if (general_acceptance && any(general_route)) {
+    psl_host[general_route] <- NA_character_
+    # ADR 0012 D7 carve-out of D2: a mailto recipient domain IS a domain, so it
+    # DOES flow through the PSL decomposition (unlike an opaque general host).
+    if (any(is_mailto_gen)) {
+      keep <- is_mailto_gen & !is.na(final_host)
+      psl_host[keep] <- final_host[keep]
+    }
+  }
+  dt_ascii <- .derive_domain_tld_vec(
+    psl_host, is_ip_host, opts$tld_source, "idna", opts$engine
+  )
+  dt_unicode <- .derive_domain_tld_vec(
+    psl_host, is_ip_host, opts$tld_source, "unicode", opts$engine
+  )
+  host_is_ace <- .host_is_ace_vec(psl_host)
+
+  cols <- list(
+    final_scheme = final_scheme,
+    source_scheme = source_scheme,
+    raw_scheme = raw_scheme,
+    final_host = final_host,
+    is_ip_host = is_ip_host,
+    raw_path = raw_path,
+    raw_query = raw_query,
+    raw_fragment = raw_fragment,
+    raw_user = raw_user,
+    raw_password = raw_password,
+    general_userinfo_split = general_userinfo_split,
+    authority_userinfo = authority_userinfo,
+    raw_port = raw_port,
+    domain_ascii = dt_ascii$domain,
+    domain_unicode = dt_unicode$domain,
+    tld_ascii = dt_ascii$tld,
+    tld_unicode = dt_unicode$tld,
+    host_is_ace = host_is_ace,
+    looks_like_protocol = prep$looks_like_protocol,
+    original_has_allowed_scheme = prep$original_has_allowed_scheme,
+    is_scheme_relative = prep$is_scheme_relative,
+    looks_like_host_port = prep$looks_like_host_port,
+    scheme_less_userinfo = prep$scheme_less_userinfo,
+    rfc3986_path_rootless = rfc3986_path_rootless,
+    # Original (pre-parse) host token: NOT a cached Stage-A field (absent from
+    # .spu_stage_a_fields) and never surfaced in the 14-column result, so it
+    # widens no public output. The url_standard metadata seam
+    # (.derive_url_metadata_vec) reads it off the direct ._parse_stage_a_vec()
+    # call to compute shape-keyed host diagnostics (RURL-luwvkwhd / T2 seam).
+    input_host = prep$input_host,
+    # WHATWG backslash recognition (RURL-ledntyab): NOT a cached Stage-A field
+    # either, read the same way by the metadata seam to emit
+    # `invalid-reverse-solidus` only where a rewrite actually happened.
+    backslash_rewritten = prep$backslash_rewritten,
+    # WHATWG control-char strip (RURL-tyetpjym): same seam, emits
+    # `control-char-stripped` only where a tab/LF/CR was actually removed.
+    control_char_stripped = prep$control_char_stripped,
+    # WHATWG leading/trailing strip (RURL-yvxpanix, step 1's first half): same
+    # seam and likewise NOT a cached Stage-A field, emits
+    # `leading-trailing-stripped` only where a leading/trailing
+    # C0-control-or-space run was actually removed.
+    leading_trailing_stripped = prep$leading_trailing_stripped,
+    # WHATWG host-charset acceptance (RURL-dxwxeamq, ADR 0009 -> ADR 0013):
+    # emits `host-charset-shimmed` where a WHATWG parse kept a host code point
+    # in `.WEB_HOST_GAP_BYTES`. Derived above from the PARSED host, not from a
+    # Phase-1 rewrite flag.
+    host_charset_shimmed = host_charset_shimmed,
+    # Also a cached Stage-A FIELD (not only the attribute below), so a cache
+    # hit can report null-ness without the cache having to encode it as a NULL
+    # value -- see the `null_row` entry in .spu_stage_a_fields.
+    null_row = null_row
+  )
+  attr(cols, "null_row") <- null_row
+  cols
+}
+
+# Stage B (vector): the presentation transform (RURL-dkwrebdt). A pure,
+# never-cached function of the cached Stage A columns (`a`), the per-row
+# original URL, `web_ok` (the complement of Stage A's null rows), and the
+# validated presentation options. Runs the option-dependent phases -- path
+# normalization (3), subdomain-level trimming (8), host encoding (9), case
+# policy (10), clean-URL assembly (11), parse-status (12), and result assembly
+# (13) -- selecting the domain/TLD spelling from Stage A's two spellings.
+# Returns the 14 columns named by .spu_result_fields (null-row error defaults
+# are applied by the caller). Every option EXCLUDED from the cache key is
+# consumed here, so switching presentation profiles re-runs only this cheap
+# stage.
+._parse_stage_b_vec <- function(a, original_url, web_ok, opts) {
+  is_ip_host <- a$is_ip_host
+
+  # Select the domain/TLD spelling exactly as .derive_domain_tld_vec() would for
+  # this host_encoding: idna -> ascii, unicode -> unicode, keep -> ascii for
+  # ACE (xn--) hosts else unicode. domain/tld emptiness (used by parse-status)
+  # is spelling-independent, so status is unaffected by the choice.
+  use_ascii <- if (opts$host_encoding == "idna") {
+    rep(TRUE, length(a$host_is_ace))
+  } else if (opts$host_encoding == "unicode") {
+    rep(FALSE, length(a$host_is_ace))
+  } else {
+    a$host_is_ace
+  }
+  domain <- ifelse(use_ascii, a$domain_ascii, a$domain_unicode)
+  tld <- ifelse(use_ascii, a$tld_ascii, a$tld_unicode)
+
+  # ADR 0012 D2 / Layer 3c (RURL-jqlnnaiw): per-row Stage-B eligibility masks.
+  # The ENTIRE restriction is gated on `scheme_acceptance == "general"`; under
+  # "web" (the default and only publicly reachable value) `.stage_b_eligibility`
+  # returns all-TRUE masks, so every revert mask below is EMPTY and every
+  # transform runs exactly as today -- byte-identity is BY CONSTRUCTION. We only
+  # compute the masks (and pay the classifier cost) under "general" so the web
+  # hot path is untouched; the predicate itself still returns all-TRUE for any
+  # non-"general" value (unit-tested) as the source of truth.
+  #
+  # DEFERRAL: www_handling (Stage A, Phase 6) and PSL domain/TLD derivation
+  # (Stage A) are NOT gated here -- Stage-A host handling for `general` is L4b's
+  # slice. This block gates only Stage-B path/host/query transforms.
+  general_acceptance <- identical(opts$scheme_acceptance, "general")
+  if (general_acceptance) {
+    scheme_lc <- .ascii_tolower(a$final_scheme)
+    is_special_row <- !is.na(scheme_lc) & scheme_lc %in% .WHATWG_SPECIAL_SCHEMES
+    # ADR 0012 Layer 4b-2 (RURL-qbnelzku): re-run the pure general parser on the
+    # original URL to recover the state kinds Stage A did not thread through the
+    # cache (the cache stores only .spu_stage_a_fields). `gp` = the rows Stage A
+    # routed to the posture parser AND that parsed ok (web_ok is the complement
+    # of Stage A's null rows). Cheap and deterministic; only the general posture
+    # pays for it.
+    # Stage A feeds the general parser its WHATWG step-1 stripped input
+    # (RURL-lsgdeisl), so this re-parse MUST strip identically -- otherwise the
+    # two stages disagree about which rows are general-routed and the recovered
+    # state kinds land on the wrong rows.
+    gen_b <- .general_parse_vec(
+      .strip_whatwg_control_chars_vec(original_url, opts$url_standard)$url,
+      opts$url_standard, opts$scheme_acceptance, opts$scheme_policy
+    )
+    gp <- gen_b$general_parsed & web_ok
+    # path_kind / host_kind for eligibility: the L3a classifier proxy for the
+    # web (special) rows, the TRUE parser kinds for the general-routed rows.
+    pk <- .whatwg_path_kind(is_special_row, a$raw_path)
+    hk <- .host_kind(a$final_host)
+    if (any(gp)) {
+      pk[gp] <- gen_b$path_kind[gp]
+      pk[gp & is.na(pk)] <- "list" # rfc posture: NA path_kind -> non-opaque
+      hk[gp] <- gen_b$host_kind[gp]
+    }
+    elig <- .stage_b_eligibility(
+      "general", a$final_scheme, opts$url_standard,
+      path_kind = pk, host_kind = hk, is_ip_host = is_ip_host
+    )
+  }
+
+  # Phase 3: path normalization.
+  path_final <- .normalize_path_vec(
+    a$raw_path, opts$path_encoding, opts$path_normalization,
+    opts$index_page_handling, opts$trailing_slash_handling,
+    path_identity = opts$path_identity
+  )
+  # D2 "Hierarchical path transforms": revert ineligible (opaque-path) rows to
+  # the pre-normalization baseline (a$raw_path). Presentation via path_encoding
+  # for opaque paths is ADR 0011's separate escape hatch (deferred to L3b/L4b);
+  # L3c only skips the hierarchical transforms here.
+  if (general_acceptance) {
+    revert <- !elig$path_eligible
+    path_final[revert] <- a$raw_path[revert]
+  }
+
+  # Phase 8: subdomain-level policy (may trim labels from the host).
+  final_host <- .apply_subdomain_policy_vec(
+    a$final_host, domain, opts$subdomain_levels_to_keep, is_ip_host, opts$engine
+  )
+  # D2 "Host presentation" / "DNS/PSL derivation": revert host-transform for
+  # ineligible (opaque/IP/empty/non-domain) hosts to the pre-trim host.
+  if (general_acceptance) {
+    revert <- !elig$host_transform_eligible
+    final_host[revert] <- a$final_host[revert]
+  }
+
+  # Phase 9: host encoding (idna / unicode).
+  host_for_clean <- .apply_host_encoding_vec(
+    final_host, opts$host_encoding, is_ip_host, opts$url_standard
+  )
+  # D2 "Host presentation (host_encoding)": revert ineligible hosts to the
+  # pre-encoding host (post-subdomain `final_host`).
+  if (general_acceptance) {
+    revert <- !elig$host_transform_eligible
+    host_for_clean[revert] <- final_host[revert]
+  }
+
+  # Phase 10: case policy applied to host, path, and scheme.
+  cased <- .apply_case_policy_vec(
+    host_for_clean, path_final, a$final_scheme, opts$case_handling
+  )
+  # D2 case split: SCHEME lowercasing is standards-required and ALWAYS applied
+  # (cased$scheme kept). The host case fold is gated on host_transform_eligible
+  # (a non-special opaque host is not lowercased); the path case fold is gated
+  # on path_eligible (an opaque path is not folded). Revert the ineligible rows
+  # to their pre-case baselines.
+  if (general_acceptance) {
+    cased$host[!elig$host_transform_eligible] <-
+      host_for_clean[!elig$host_transform_eligible]
+    cased$path[!elig$path_eligible] <- path_final[!elig$path_eligible]
+  }
+
+  # Query filtering: derive the canonical query to append to clean_url per
+  # query_handling (default "drop" => "" for every row, i.e. the historical
+  # query-free clean_url). Fed from the raw query (Stage A) and the query
+  # options only; deliberately EXEMPT from case_handling (query values are
+  # case-sensitive -- see .apply_case_policy_vec, which folds scheme/host/path
+  # only), so it is computed here and appended AFTER the cased components.
+  clean_query <- .filter_query_vec(a$raw_query, opts)
+  # D2 "Automatic semantic transforms" (query filter/sort): HTTP(S) only under
+  # `general`. Skip the transform for ineligible rows -- pass the raw query
+  # through unchanged (NA -> "" to match .filter_query_vec's absent-query shape)
+  # rather than applying the filter/sort/drop policy. This is the
+  # `transform-skipped-ineligible-scheme` case L5 will surface.
+  if (general_acceptance) {
+    skip <- !elig$semantic_transform_eligible
+    if (any(skip)) {
+      rq <- a$raw_query[skip]
+      rq[is.na(rq)] <- ""
+      clean_query[skip] <- rq
+    }
+  }
+
+  query_output <- a$raw_query
+  fragment_output <- a$raw_fragment
+  # RUL-016: default-ness is judged on the PARSED scheme. `a$final_scheme` is
+  # already `https` under `protocol_handling = "https"`, which nulled a real
+  # `http://host:443` port and resurrected an `http://host:80` one the WHATWG
+  # record holds as null.
+  port_output <- .apply_port_output_policy_vec(
+    a$raw_scheme, a$raw_port, opts$port_handling, opts$url_standard
+  )
+  if (.is_whatwg(opts$url_standard)) {
+    q_idx <- which(!is.na(query_output))
+    if (length(q_idx) > 0L) {
+      query_output[q_idx] <- mapply(
+        .whatwg_query_percent_encode,
+        query_output[q_idx],
+        a$final_scheme[q_idx],
+        USE.NAMES = FALSE
+      )
+    }
+    f_idx <- which(!is.na(fragment_output))
+    if (length(f_idx) > 0L) {
+      fragment_output[f_idx] <- vapply(
+        fragment_output[f_idx], .whatwg_fragment_percent_encode, character(1),
+        USE.NAMES = FALSE
+      )
+    }
+  }
+
+  # Userinfo identity (RURL-micalqvh, half b): WHATWG's authority state stores
+  # the username/password buffers percent-encoded with the userinfo
+  # percent-encode set, so under `url_standard = "whatwg"` the PARSED `user` /
+  # `password` columns carry that spelling. `a$raw_user` / `a$raw_password` are
+  # the source slices and keep the raw spelling untouched (the escape hatch).
+  # Under `rfc3986` or no selector the columns stay source-preserving.
+  #
+  # Applied ONLY where the userinfo was actually SPLIT into a username and a
+  # password, which is what `a$general_userinfo_split` records. Encoding an
+  # UNDIVIDED userinfo would render its structural ":" as "%3A" and misreport
+  # it. The rows that stay undivided, and why:
+  #   * the RFC 8089 `file:` overlay -- App. E.1's production is
+  #     `[ userinfo "@" ]`, undivided, and the appendix warns a password there
+  #     is "a serious security exposure".
+  #   * a mailto: `user` is a recipient LOCAL-PART (ADR 0012 D7), not a URL
+  #     userinfo at all -- mailto is an opaque path under WHATWG, so no userinfo
+  #     encode set applies to it. (It carries no authority, so the general
+  #     parser leaves its userinfo NA and the mask is FALSE.)
+  # The general/opaque route USED to be a third exclusion, because it dropped
+  # userinfo instead of splitting it. It now splits, so it is encoded here on
+  # the same terms as the web route (RURL-ovpguvva).
+  user_output <- a$raw_user
+  password_output <- a$raw_password
+  if (.is_whatwg(opts$url_standard)) {
+    split_userinfo <- if (general_acceptance) {
+      !gp | a$general_userinfo_split
+    } else {
+      rep(TRUE, length(a$raw_user))
+    }
+    u_idx <- which(split_userinfo & !is.na(user_output))
+    if (length(u_idx) > 0L) {
+      user_output[u_idx] <- vapply(
+        user_output[u_idx], .whatwg_userinfo_percent_encode, character(1),
+        USE.NAMES = FALSE
+      )
+    }
+    p_idx <- which(split_userinfo & !is.na(password_output))
+    if (length(p_idx) > 0L) {
+      password_output[p_idx] <- vapply(
+        password_output[p_idx], .whatwg_userinfo_percent_encode, character(1),
+        USE.NAMES = FALSE
+      )
+    }
+  }
+
+  # Phase 11: clean URL reconstruction (with the filtered query appended).
+  clean_url <- .build_clean_url_vec(
+    cased$scheme, cased$host, cased$path, opts$trailing_slash_handling,
+    query = clean_query, port = a$raw_port, port_handling = opts$port_handling,
+    url_standard = opts$url_standard,
+    # RUL-016: `strip_default` keys the default-port table off the parsed
+    # scheme, not the cased/upgraded one the string is rendered with.
+    port_scheme = a$raw_scheme
+  )
+  # ADR 0012 Layer 4b-2 (RURL-qbnelzku): serializer dispatch. Under general the
+  # posture-serialized clean_url REPLACES the special/host-present builder for
+  # the general-routed rows -- WHATWG (opaque/list, null-vs-empty host, `/.`
+  # guard) or RFC generic (source-preserving). web/special rows keep
+  # `.build_clean_url_vec` verbatim; under "web" `gp` is empty (passthrough).
+  if (general_acceptance && any(gp)) {
+    if (.is_whatwg(opts$url_standard)) {
+      clean_url[gp] <- .serialize_whatwg_vec(
+        scheme = cased$scheme[gp], host = gen_b$host[gp],
+        host_kind = gen_b$host_kind[gp],
+        authority_delimiter_present =
+          gen_b$authority_delimiter_present[gp],
+        path = gen_b$path[gp],
+        path_kind = gen_b$path_kind[gp], query = gen_b$query[gp],
+        query_kind = gen_b$query_kind[gp], port = gen_b$port[gp],
+        port_handling = opts$port_handling,
+        port_scheme = a$raw_scheme[gp],
+        trailing_slash_handling = opts$trailing_slash_handling
+      )
+    } else {
+      clean_url[gp] <- .serialize_rfc_generic_vec(
+        scheme = cased$scheme[gp], host = gen_b$host[gp],
+        host_kind = gen_b$host_kind[gp],
+        authority_delimiter_present =
+          gen_b$authority_delimiter_present[gp],
+        path = gen_b$path[gp],
+        rfc_path_form = gen_b$rfc_path_form[gp], query = gen_b$query[gp],
+        query_kind = gen_b$query_kind[gp], port = gen_b$port[gp],
+        port_handling = opts$port_handling,
+        port_scheme = a$raw_scheme[gp]
+      )
+    }
+  }
+
+  # Phase 12: the three independent verdict layers (R/verdicts.R), then the
+  # legacy `parse_status` as their projection pi. Uses the post-subdomain-trim
+  # host, exactly as the previous single-stage engine did. The layers are
+  # carried out of Stage B on an attribute so `get_parse_verdicts()` reads the
+  # SAME derivation the status came from; the public parse frame is untouched
+  # (ADR 0006 -- companion helpers never widen it).
+  verdicts <- .derive_verdict_layers_vec(
+    web_ok = web_ok,
+    final_host = final_host,
+    is_ip_host = is_ip_host,
+    tld = tld,
+    domain = domain,
+    protocol_handling = opts$protocol_handling,
+    final_scheme = a$final_scheme,
+    looks_like_protocol = a$looks_like_protocol,
+    original_has_allowed_scheme = a$original_has_allowed_scheme,
+    looks_like_host_port = a$looks_like_host_port,
+    is_scheme_relative = a$is_scheme_relative,
+    scheme_relative_handling = opts$scheme_relative_handling,
+    rfc3986_path_rootless = a$rfc3986_path_rootless,
+    scheme_acceptance = opts$scheme_acceptance,
+    is_general = if (general_acceptance) gp else NULL,
+    # D5 scheme-less userinfo used to overwrite the FINISHED status below,
+    # which made `.derive_parse_status_vec()` not actually the locus that
+    # decided the status. It is an L2 policy note, so it is an input to the
+    # layers and reaches the status only through pi (RURL-pnprjiis).
+    scheme_less_userinfo = a$scheme_less_userinfo
+  )
+  parse_status <- .project_parse_status_vec(verdicts)
+
+  # A failed parse has no canonical spelling to emit. Most error rows already
+  # arrive here with clean_url = NA because their components are unbuildable,
+  # but an RFC-normalized hostless `file:.` has an empty path and otherwise
+  # assembles as `file://`. Apply the invariant after the verdict projection so
+  # every serializer route is covered at one seam (RURL-pjqchuqs).
+  clean_url[parse_status == "error"] <- NA_character_
+
+  # Phase 13: assemble the 14 typed columns.
+  result <- .assemble_parse_result_vec(
+    original_url = original_url,
+    scheme_output = cased$scheme,
+    host_output = cased$host,
+    port = port_output,
+    path_output = cased$path,
+    raw_query = query_output,
+    fragment = fragment_output,
+    user = user_output,
+    password = password_output,
+    domain = domain,
+    tld = tld,
+    # Encoding-independent identity spellings (RURL-owrdsivt): surfaced straight
+    # from Stage A's cached both-spelling decomposition, unaffected by
+    # host_encoding (which only selects `domain`/`tld` above).
+    domain_ascii = a$domain_ascii,
+    domain_unicode = a$domain_unicode,
+    tld_ascii = a$tld_ascii,
+    tld_unicode = a$tld_unicode,
+    is_ip_host = is_ip_host,
+    clean_url = clean_url,
+    parse_status = parse_status,
+    is_scheme_relative = a$is_scheme_relative,
+    scheme_relative_handling = opts$scheme_relative_handling
+  )
+
+  # D5: scheme-less userinfo (user@example.com). host/domain/tld/user still
+  # resolve, but rurl refuses to fabricate a canonical clean_url from an
+  # ambiguous, email-shaped, scheme-less string: NA clean_url. The accompanying
+  # `warning-userinfo` status is no longer stamped here -- it is the L2
+  # `warn-userinfo` verdict, projected by pi in Phase 12 above.
+  slu <- a$scheme_less_userinfo & web_ok
+  if (any(slu)) {
+    result$clean_url[slu] <- NA_character_
+  }
+
+  # credential_handling (RUL-001, ADR 0017 row 12): the clean surface always
+  # drops userinfo; under "reject" a row whose parsed authority carried ANY
+  # userinfo delimiter -- `user@`, `user:pw@`, a bare `@`, `:@`, a repeated
+  # `@` -- gets NA instead of a silently collapsed URL (RFC 3986 sec 3.2.1,
+  # sec 7.5, sec 7.6). Only `clean_url` moves: the components, the verdicts
+  # and the diagnostics read the same Stage-A facts as before, and the identity
+  # surfaces (serialize_url / get_url_key) never pass through here.
+  if (identical(opts$credential_handling, "reject")) {
+    rej <- a$authority_userinfo & web_ok
+    if (any(rej)) {
+      result$clean_url[rej] <- NA_character_
+    }
+  }
+
+  # Output-side encoding contract: declare the returned character columns UTF-8.
+  out <- .mark_result_utf8(result)
+  attr(out, "verdicts") <- verdicts
+  out
 }
 
 # Internal implementation of safe_parse_url (not memoized)
@@ -516,27 +2803,42 @@ safe_parse_urls <- function(url,
                                   scheme_relative_handling,
                                   subdomain_levels_to_keep,
                                   host_encoding = "keep",
-                                  path_encoding = "keep") {
+                                  path_encoding = "keep",
+                                  url_standard = NULL,
+                                  engine = NULL) {
   original_input_url <- url
 
-  host_encoding <- match.arg(host_encoding, c("keep", "idna", "unicode"))
-  path_encoding <- match.arg(path_encoding, c("keep", "encode", "decode"))
+  # host_encoding/path_encoding are already validated upstream by
+  # .parse_options(); no re-validation here.
 
-  # Phase 1: scheme detection and input preparation for curl
-  prep <- .prepare_url_for_curl(
+  # Phase 1: scheme detection and input preparation for the web parse
+  prep <- .prepare_url_for_parse(
     url, protocol_handling, scheme_relative_handling
   )
   if (is.null(prep)) {
     return(NULL)
   }
 
-  # Phase 2: parse with curl, then pull out raw components
-  parsed_curl <- .parse_with_curl(prep$url_to_parse)
-  if (is.null(parsed_curl)) {
+  # Phase 2: run the web parse, then pull out raw components
+  parsed_web <- .parse_web_url_one(
+    prep$url_to_parse,
+    last_at_userinfo = .is_whatwg(url_standard),
+    host_pct = .web_host_pct_policy(url_standard),
+    pqf_bytes = .web_pqf_policy(url_standard),
+    host_charset = .web_host_charset_policy(url_standard),
+    host_ipv4 = .web_host_ipv4_policy(url_standard),
+    empty_path = .web_empty_path_policy(url_standard),
+    host_pct_octets = .web_host_pct_octets_policy(url_standard),
+    port_range = .web_port_range_policy(url_standard),
+    pqf_source = .web_pqf_source_policy(url_standard)
+  )
+  if (is.null(parsed_web)) {
     return(NULL)
   }
-  raw <- .extract_raw_components(parsed_curl)
-  raw_host <- raw$host
+  raw <- .extract_raw_components(
+    parsed_web, prep$url_to_parse, .web_pqf_policy(url_standard)
+  )
+  raw_host <- .mark_host_utf8(raw$host)
   raw_query <- raw$query
 
   # Phase 3: path normalization (decode, slashes/dots, index, trailing, encode)
@@ -550,27 +2852,41 @@ safe_parse_urls <- function(url,
 
   # Phase 4: final scheme per protocol policy
   final_scheme <- .derive_final_scheme(
-    protocol_handling, prep$original_looks_like_protocol, raw$scheme
+    protocol_handling, prep$looks_like_protocol, raw$scheme
   )
 
   # Phase 5: IP host detection
   is_ip_host <- .detect_ip_host(raw_host)
 
   # Phase 6: www prefix policy
-  final_host <- .apply_www_policy(raw_host, www_handling, is_ip_host)
+  final_host <- .apply_www_policy(raw_host, www_handling, is_ip_host, engine)
 
-  # Phase 7: registered-domain and TLD derivation
-  domain_tld <- .derive_domain_tld(final_host, is_ip_host, tld_source)
+  # Phase 7: registered-domain and TLD derivation. `domain`/`tld` follow
+  # host_encoding (a rendering choice); the two fixed spellings (idna/unicode)
+  # are also derived so the encoding-independent identity columns
+  # (domain_ascii/domain_unicode/tld_ascii/tld_unicode, RURL-owrdsivt) can be
+  # emitted -- mirroring Stage A's both-spelling derivation.
+  domain_tld <- .derive_domain_tld(
+    final_host, is_ip_host, tld_source, host_encoding, engine
+  )
   domain <- domain_tld$domain
   tld <- domain_tld$tld
+  dt_ascii <- .derive_domain_tld(
+    final_host, is_ip_host, tld_source, "idna", engine
+  )
+  dt_unicode <- .derive_domain_tld(
+    final_host, is_ip_host, tld_source, "unicode", engine
+  )
 
   # Phase 8: subdomain-level policy
   final_host <- .apply_subdomain_policy(
-    final_host, domain, subdomain_levels_to_keep, is_ip_host
+    final_host, domain, subdomain_levels_to_keep, is_ip_host, engine
   )
 
   # Phase 9: host encoding (idna / unicode)
-  host_for_clean <- .apply_host_encoding(final_host, host_encoding, is_ip_host)
+  host_for_clean <- .apply_host_encoding(
+    final_host, host_encoding, is_ip_host, url_standard
+  )
 
   # Phase 10: case policy applied to host, path, and scheme
   cased <- .apply_case_policy(
@@ -587,33 +2903,52 @@ safe_parse_urls <- function(url,
 
   # Phase 12: parse-status assignment
   parse_status <- .derive_parse_status(
-    parsed_curl = parsed_curl,
+    parsed_web = parsed_web,
     final_host = final_host,
     is_ip_host = is_ip_host,
     tld = tld,
     domain = domain,
     protocol_handling = protocol_handling,
     final_scheme = final_scheme,
-    original_looks_like_protocol = prep$original_looks_like_protocol,
+    looks_like_protocol = prep$looks_like_protocol,
     original_has_allowed_scheme = prep$original_has_allowed_scheme,
+    looks_like_host_port = prep$looks_like_host_port,
     is_scheme_relative = prep$is_scheme_relative,
-    scheme_relative_handling = scheme_relative_handling
+    scheme_relative_handling = scheme_relative_handling,
+    # D5 scheme-less userinfo is an L2 policy NOTE, so it is an input to the
+    # layers and reaches the status only through pi -- never stamped over the
+    # finished status here. Mirrors the vector engine (RURL-pnprjiis).
+    scheme_less_userinfo = prep$scheme_less_userinfo
   )
 
-  # Phase 13: assemble the typed result list
-  .assemble_parse_result(
+  # D5: scheme-less userinfo (user@example.com) -- suppress the fabricated
+  # clean_url (host/domain/tld/user still resolve). The accompanying
+  # `warning-userinfo` status is NOT set here; it is the L2 `warn-userinfo`
+  # verdict, projected by pi in Phase 12 above. Gated on a successful web parse
+  # exactly as the vector engine gates it.
+  if (isTRUE(prep$scheme_less_userinfo) && !is.null(parsed_web)) {
+    clean_url <- NA_character_
+  }
+
+  # Phase 13: assemble the typed result list, then declare the returned
+  # character fields UTF-8 (the output-side encoding contract).
+  .mark_result_utf8(.assemble_parse_result(
     original_input_url = original_input_url,
     scheme_output = scheme_output,
     host_output = host_output,
-    parsed_curl = parsed_curl,
+    parsed_web = parsed_web,
     path_output = path_output,
     raw_query = raw_query,
     domain = domain,
     tld = tld,
+    domain_ascii = dt_ascii$domain,
+    domain_unicode = dt_unicode$domain,
+    tld_ascii = dt_ascii$tld,
+    tld_unicode = dt_unicode$tld,
     is_ip_host = is_ip_host,
     clean_url = clean_url,
     parse_status = parse_status,
     is_scheme_relative = prep$is_scheme_relative,
     scheme_relative_handling = scheme_relative_handling
-  )
+  ))
 }

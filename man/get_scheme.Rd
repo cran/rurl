@@ -4,23 +4,120 @@
 \alias{get_scheme}
 \title{Get URL schemes}
 \usage{
-get_scheme(url, protocol_handling = "keep")
+get_scheme(
+  url,
+  protocol_handling = "keep",
+  scheme_relative_handling = "keep",
+  scheme_policy = c("infer", "require"),
+  scheme_acceptance = c("web", "general"),
+  url_standard = NULL
+)
 }
 \arguments{
 \item{url}{A character vector of URLs.}
 
 \item{protocol_handling}{A character string specifying how to handle
 protocols. Defaults to "keep".
+Regardless of this option, rurl only processes authority-based URLs whose
+scheme is one of http, https, ftp, or ftps; a scheme-bearing input with any
+other scheme (e.g. \code{mailto:}, \code{tel:}, \code{ws:}) yields
+\code{parse_status = "error"}. Scheme inference (below) also requires the
+input to be host-shaped: a scheme-less string that is not a host (e.g.
+\code{"asdfghjkl"}, \code{"12345"}, \code{"/path"}) or is a non-canonical
+IP literal (integer/hex/octal/short forms, or leading-zero octets like
+\code{"192.168.010.1"}) is rejected as \code{"error"} rather than having a
+scheme fabricated for it.
 \itemize{
-  \item{"keep": If a scheme exists (http, https, ftp, ftps), it's used. If
-  no scheme, "http://" is added.}
-  \item{"none": If a scheme exists, it's used. If no scheme, then no
-  scheme is used (scheme component will be NA).}
-  \item{"strip": Any existing scheme is removed (scheme component will be
-  NA).}
-  \item{"http": The scheme is forced to be "http".}
-  \item{"https": The scheme is forced to be "https".}
+\item{"keep": If a supported scheme exists (http, https, ftp, ftps), it's
+used. If no scheme and the input is host-shaped, "http://" is added;
+otherwise the input is not a URL and yields \code{"error"}.}
+\item{"none": If a supported scheme exists, it's used. If no scheme, then
+no scheme is used (scheme component will be NA).}
+\item{"strip": Any existing scheme is removed (scheme component will be
+NA).}
+\item{"http": The scheme is forced to be "http".}
+\item{"https": The scheme is forced to be "https".}
 }}
+
+\item{scheme_relative_handling}{How to handle URLs starting with "//".
+Defaults to "keep".
+\itemize{
+\item{"keep": Parse using http but return scheme as NA and set status to
+"ok-scheme-relative".}
+\item{"http": Assume http for parsing and output.}
+\item{"https": Assume https for parsing and output.}
+\item{"error": Treat scheme-relative URLs as invalid.}
+}}
+
+\item{scheme_policy}{Controls whether scheme-less, host-shaped input is
+\emph{accepted} (an input-acceptance axis, distinct from \code{protocol_handling},
+which only controls how the scheme is \emph{presented}, and from \code{url_standard},
+which controls interpretation). Defaults to "infer".
+\itemize{
+\item{"infer": (Default) Fabricate \verb{http://} for scheme-less host-shaped
+input (e.g. \code{example.com} parses as \verb{http://example.com}), a
+browser-omnibox-style affordance. This is the historical behavior.}
+\item{"require": Reject scheme-less input — a scheme-less host-shaped
+value becomes \code{parse_status = "error"} rather than gaining a fabricated
+scheme. Use this for a strict, pure-parser posture. Note this governs
+only bare host input; scheme-relative \verb{//host} input is governed
+separately by \code{scheme_relative_handling}.}
+}}
+
+\item{scheme_acceptance}{Which scheme \emph{tokens} may enter parsing (a
+scheme-acceptance axis, distinct from \code{scheme_policy}, which governs
+scheme-\emph{less} input, and from \code{url_standard}, which governs interpretation).
+Defaults to "web".
+\itemize{
+\item{"web": (Default) Only the curated web-scheme allowlist
+(\code{http}/\code{https}/\code{ftp}/\code{ftps}/\code{file}) is admitted; a scheme-bearing input
+outside it is \code{parse_status = "error"}. This is the historical,
+byte-for-byte compatible behavior.}
+\item{"general": Admit any syntactically valid scheme token and parse
+opaque (\code{mailto:x}), non-special (\verb{foo://host}), and RFC-generic URLs.
+Requires an explicit \code{url_standard} (\code{"rfc3986"} or \code{"whatwg"}), which
+decides the interpretation; \code{general} with \code{url_standard = NULL} is an
+error. Non-special / opaque hosts receive no www-stripping, no domain/TLD
+derivation, and are never run through the IDNA/punycode helpers.
+A non-special scheme with no \verb{//} is an \emph{opaque path}: it has no
+authority, so \code{host}, \code{user}, \code{port} and the \code{domain}/\code{tld} columns are
+all \code{NA} and the entire remainder is the \code{path} (\code{query}/\code{fragment} are
+still split off). This includes \verb{mailto:} — the recipient's \code{@} never
+re-triggers authority parsing. To decompose a \verb{mailto:} recipient, use
+the accessors (\code{get_host()} / \code{get_domain()} / \code{get_user()}, ADR 0012 D7)
+or \code{get_mailto_recipients()}; those deliberately return a recipient's
+parts where this table presents \code{NA}, because a recipient domain is
+extraction metadata, not the URL's authority.}
+}
+Note that \verb{file:} is admitted under \emph{both} values, including the default.
+A \verb{file:} URL denotes local-filesystem access, and one with a non-empty
+host (\verb{file://server/share/x}) is a UNC path on Windows, so dereferencing
+it reaches a remote SMB share. rurl parses \verb{file:} URLs; it never opens
+them. Restricting schemes before anything dereferences them is the
+caller's job — see \code{SECURITY.md}.}
+
+\item{url_standard}{Optional top-level standard profile: \code{NULL} (default),
+\code{"rfc3986"}, or \code{"whatwg"}. With \code{NULL} the behavior is exactly what the
+individual low-level options select (fully backward compatible). When set,
+it selects a coherent set of standard-conformant behaviors for the axes it
+governs — path percent/dot handling, the host IPv4/reg-name model, and
+\code{case_handling} — so callers do not have to hand-assemble the low-level
+knobs. Passing a governed low-level knob (\code{path_normalization} or
+\code{case_handling}) with a value the selected
+profile would not choose is an error; passing the value the profile would
+pick is accepted (only \code{case_handling = "lower_host"} is accepted under a
+selector — \code{"keep"}, \code{"lower"}, and \code{"upper"} all conflict, since \code{"lower"}
+also lowercases the path, which neither standard sanctions). Added as the
+last argument so existing positional calls keep their meaning; always
+pass it by name. Under \code{"whatwg"} the selector additionally recognizes a
+literal backslash as a path separator for WHATWG-special schemes
+(\code{http}/\code{https}/\code{ftp}) and nulls default ports in parse output; use
+\code{port_handling = "strip_default"} for spec-style clean URL port rendering.
+See \code{\link{resolve_url}} for \code{url_standard}-governed
+reference resolution. The selector does \strong{not} govern whether
+\code{port_handling} may be set (it is a standalone editorial knob), nor does it
+govern \code{path_encoding} (an orthogonal path-presentation knob that layers
+on any profile), IDNA rendering, or query handling.}
 }
 \value{
 A character vector of URL schemes.
@@ -28,6 +125,17 @@ A character vector of URL schemes.
 \description{
 Extracts the scheme (protocol) of a URL.
 }
+\details{
+By default (\code{scheme_acceptance = "web"}) only rurl's web-scheme
+allowlist parses, so an opaque scheme such as \code{mailto:} or \code{tel:}
+yields \code{NA}. Pass \code{scheme_acceptance = "general"} (which requires
+an explicit \code{url_standard}) to run the general parser, under which those
+schemes resolve and their scheme string is returned.
+}
 \examples{
 get_scheme("https://example.com")
+get_scheme(
+  "mailto:jane@example.com",
+  url_standard = "rfc3986", scheme_acceptance = "general"
+)
 }

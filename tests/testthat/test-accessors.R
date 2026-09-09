@@ -32,6 +32,72 @@ test_that("get_clean_url handles host:port without explicit scheme", {
   )
 })
 
+test_that("get_clean_url drops the query by default (byte-identical)", {
+  # query_handling defaults to "drop", so a query-bearing URL cleans to the
+  # historical scheme/host/path key with no "?".
+  expect_equal(
+    unname(get_clean_url("http://example.com/p?utm_source=nl&id=42")),
+    "http://example.com/p"
+  )
+})
+
+test_that("get_clean_url forwards the query engine (parity w/ safe_parse)", {
+  urls <- c(
+    "http://example.com/p?utm_source=nl&id=42",
+    "https://Example.COM/Path/?b=2&a=1&fbclid=xyz",
+    "http://e.com/nopath",
+    "http://e.com/?ref=&keep=1",
+    "not-a-url"
+  )
+  # For every engine mode + companion arg, the accessor must equal the
+  # safe_parse_url(...)$clean_url it wraps.
+  profiles <- list(
+    list(query_handling = "keep"),
+    list(query_handling = "drop"),
+    list(query_handling = "filter"),
+    list(query_handling = "filter", params_drop = "id"),
+    list(query_handling = "filter", params_keep = "fbclid"),
+    list(query_handling = "allow", params_keep = "a"),
+    list(query_handling = "filter", sort_params = TRUE),
+    list(query_handling = "filter", empty_param_handling = "drop"),
+    list(query_handling = "keep", decode_plus = TRUE),
+    list(query_handling = "filter", params_case_sensitive = TRUE)
+  )
+  for (p in profiles) {
+    via_accessor <- unname(do.call(get_clean_url, c(list(urls), p)))
+    via_engine <- vapply(
+      urls,
+      function(u) {
+        # Scalar safe_parse_url returns clean_url = NULL on an unparseable
+        # input; the accessor pins those null rows to NA (its documented
+        # contract), so normalize length-0 to NA before comparing.
+        cu <- do.call(safe_parse_url, c(list(u), p))$clean_url
+        if (length(cu) == 0L) NA_character_ else cu
+      },
+      character(1),
+      USE.NAMES = FALSE
+    )
+    expect_equal(via_accessor, via_engine, info = p$query_handling)
+  }
+})
+
+test_that("get_clean_url filter mode keeps a shaped query on the clean URL", {
+  expect_equal(
+    unname(get_clean_url(
+      "http://example.com/p?utm_source=nl&id=42",
+      query_handling = "filter"
+    )),
+    "http://example.com/p?id=42"
+  )
+})
+
+test_that("get_clean_url validates the query enum args early", {
+  expect_error(get_clean_url("http://e.com/?a=1", query_handling = "bogus"))
+  expect_error(
+    get_clean_url("http://e.com/?a=1", empty_param_handling = "bogus")
+  )
+})
+
 test_that("get_domain works with subdomains", {
   expect_equal(unname(get_domain("https://sub.example.co.uk")), "example.co.uk")
   expect_equal(unname(get_domain("http://localhost")), NA_character_)
@@ -57,11 +123,11 @@ test_that("get_parse_status validates allowed schemes only", {
   expect_equal(unname(get_parse_status("https://example.com")), "ok")
   expect_equal(unname(get_parse_status("ftp://example.com")), "ok-ftp")
   expect_equal(unname(get_parse_status("ftps://example.com")), "ok-ftp")
+  expect_equal(unname(get_parse_status("file:///home/user/file.txt")), "ok")
 })
 
 test_that("get_parse_status rejects unsupported or malformed schemes", {
   expect_equal(unname(get_parse_status("mailto:x@example.com")), "error")
-  expect_equal(unname(get_parse_status("file:///home/user/file.txt")), "error")
   expect_equal(unname(get_parse_status("ftp:example.com")), "error")
   expect_equal(unname(get_parse_status("s3://bucket-name")), "error")
   expect_equal(unname(get_parse_status("data:text/plain,hello")), "error")
@@ -102,8 +168,9 @@ test_that("safe_parse_url handles protocol-relative URLs", {
 test_that(
   "get_parse_status returns error for parseable but unsupported schemes",
   {
-  expect_equal(unname(get_parse_status("ws://example.com")), "error")
-})
+    expect_equal(unname(get_parse_status("ws://example.com")), "error")
+  }
+)
 
 test_that("get_parse_status detects no-TLD hosts", {
   expect_equal(unname(get_parse_status("http://just-a-path")), "warning-no-tld")
@@ -122,9 +189,10 @@ test_that("get_parse_status detects no-TLD hosts", {
 test_that(
   "get_clean_url returns NA if parsed is NULL or host/path is missing",
   {
-  expect_true(is.na(get_clean_url("mailto:user@example.com")))
-  expect_true(is.na(get_clean_url("")))
-})
+    expect_true(is.na(get_clean_url("mailto:user@example.com")))
+    expect_true(is.na(get_clean_url("")))
+  }
+)
 
 test_that("get_domain returns NA when parsed or host is missing", {
   expect_true(is.na(get_domain("mailto:user@example.com")))
@@ -174,9 +242,251 @@ test_that("get_path respects case_handling", {
 test_that("get_query returns string or parsed list", {
   expect_equal(unname(get_query("http://example.com/path?a=1&b=2")), "a=1&b=2")
   parsed <- get_query("http://example.com/path?a=1&a=2&b=3", format = "list")
-  expect_true(is.list(parsed))
+  expect_type(parsed, "list")
   expect_equal(parsed[[1]]$a, c("1", "2"))
   expect_equal(parsed[[1]]$b, "3")
+})
+
+test_that("get_query(format = 'list') preserves encoded '&' (%26) in values", {
+  # Regression: an encoded ampersand inside a value must not be treated as a
+  # pair delimiter when splitting the query string.
+  expect_equal(
+    get_query("http://example.com/?a=1%262", format = "list")[[1]],
+    list(a = "1&2")
+  )
+  # Scalar (string) form must be unaffected by the fix.
+  expect_equal(
+    unname(get_query("http://example.com/?a=1%262")),
+    "a=1&2"
+  )
+})
+
+test_that("get_query defaults reproduce the faithful raw-query edges", {
+  # The fast path must keep the edges the canonical engine normalizes away.
+  expect_equal(unname(get_query("http://e.com/?flag")), "flag") # not flag=
+  expect_equal(unname(get_query("http://e.com/?a=b&")), "a=b&") # trailing &
+  expect_equal(unname(get_query("http://e.com/?a&b=2")), "a&b=2")
+  expect_true(is.na(get_query("http://e.com/nopath"))) # no query -> NA
+  # Fast path (default) and identity engine invocation agree on a plain query.
+  expect_equal(
+    unname(get_query("http://e.com/?a=1&b=2", sort_params = TRUE)),
+    "a=1&b=2"
+  )
+})
+
+test_that("get_query filter mode drops trackers and keeps contentful params", {
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?utm_source=nl&id=42&fbclid=xyz",
+      query_handling = "filter"
+    )),
+    "id=42"
+  )
+  # params_drop extends the denylist; params_keep rescues over it.
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?keepme=1&junk=2",
+      query_handling = "filter", params_drop = "junk"
+    )),
+    "keepme=1"
+  )
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?utm_source=nl&id=42",
+      query_handling = "filter", params_keep = "utm_source"
+    )),
+    "utm_source=nl&id=42"
+  )
+})
+
+test_that("get_query allow mode keeps only params_keep matches", {
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?a=1&id=2&b=3",
+      query_handling = "allow", params_keep = "id"
+    )),
+    "id=2"
+  )
+  # Glob support (only '*').
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?p_a=1&p_b=2&q=3",
+      query_handling = "allow", params_keep = "p_*"
+    )),
+    "p_a=1&p_b=2"
+  )
+  # No match -> empty query, but a present query is "" (not NA).
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?a=1", query_handling = "allow", params_keep = "zzz"
+    )),
+    ""
+  )
+})
+
+test_that("get_query drop mode empties the query but preserves the NA row", {
+  expect_equal(
+    unname(get_query("http://e.com/?a=1&b=2", query_handling = "drop")),
+    ""
+  )
+  expect_true(is.na(get_query("http://e.com/nopath", query_handling = "drop")))
+  expect_equal(
+    get_query("http://e.com/?a=1", query_handling = "drop", format = "list"),
+    list(list())
+  )
+})
+
+test_that("get_query drop-empty rescues via params_keep", {
+  expect_equal(
+    unname(get_query("http://e.com/?a=&b=2", empty_param_handling = "drop")),
+    "b=2"
+  )
+  # In filter mode params_keep rescues an empty param over empty-dropping.
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?ref=&b=2",
+      query_handling = "filter",
+      empty_param_handling = "drop", params_keep = "ref"
+    )),
+    "ref=&b=2"
+  )
+  # In allow mode params_keep is inclusion-only: an allowed empty still drops.
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?ref=&b=2",
+      query_handling = "allow",
+      empty_param_handling = "drop", params_keep = c("ref", "b")
+    )),
+    "b=2"
+  )
+})
+
+test_that("get_query sort_params stably sorts by decoded key", {
+  expect_equal(
+    unname(get_query("http://e.com/?c=3&a=1&b=2", sort_params = TRUE)),
+    "a=1&b=2&c=3"
+  )
+  # Stable: repeated keys keep their original relative order.
+  expect_equal(
+    unname(get_query("http://e.com/?b=1&a=x&b=2", sort_params = TRUE)),
+    "a=x&b=1&b=2"
+  )
+})
+
+test_that("get_query decode = FALSE renders the canonical re-encoded form", {
+  # Uppercase hex, unreserved decoded, reserved re-encoded.
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?a=%2f&b=%41", sort_params = TRUE, decode = FALSE
+    )),
+    "a=%2F&b=A"
+  )
+  # decode = TRUE gives the readable decoded spelling.
+  expect_equal(
+    unname(get_query("http://e.com/?a=%2f&b=%41", sort_params = TRUE)),
+    "a=/&b=A"
+  )
+  # %26 inside a value: decoded shows '&', canonical re-encodes it.
+  expect_equal(
+    unname(get_query("http://e.com/?a=x%26y", query_handling = "filter")),
+    "a=x&y"
+  )
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?a=x%26y", query_handling = "filter", decode = FALSE
+    )),
+    "a=x%26y"
+  )
+})
+
+test_that("get_query passes opaque tokens through byte-for-byte", {
+  # Malformed %zz and a lone % are opaque: unchanged in both render modes.
+  expect_equal(
+    unname(get_query("http://e.com/?a=%zz", query_handling = "filter")),
+    "a=%ZZ"
+  )
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?a=%zz", query_handling = "filter", decode = FALSE
+    )),
+    "a=%ZZ"
+  )
+  expect_equal(
+    unname(get_query("http://e.com/?a=50%", query_handling = "filter")),
+    "a=50%"
+  )
+})
+
+test_that("get_query decode_plus converts '+' to space in values only", {
+  expect_equal(
+    unname(get_query("http://e.com/?q=a+b", decode_plus = TRUE)),
+    "q=a b"
+  )
+  expect_equal(
+    unname(get_query("http://e.com/?q=a+b", decode_plus = FALSE)),
+    "q=a+b"
+  )
+  # Canonical form (engine active): '+' -> %20 under decode_plus, else the
+  # literal '+' re-encoded to %2B. decode_plus = TRUE alone activates the
+  # engine; the decode_plus = FALSE case needs another opt-in (sort_params) to
+  # leave the raw-passthrough fast path.
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?q=a+b", decode = FALSE, decode_plus = TRUE
+    )),
+    "q=a%20b"
+  )
+  expect_equal(
+    unname(get_query(
+      "http://e.com/?q=a+b", decode = FALSE, decode_plus = FALSE,
+      sort_params = TRUE
+    )),
+    "q=a%2Bb"
+  )
+  # The default keep path with decode = FALSE returns the raw query verbatim.
+  expect_equal(
+    unname(get_query("http://e.com/?q=a+b", decode = FALSE)),
+    "q=a+b"
+  )
+})
+
+test_that("get_query filter mode works for format = 'list'", {
+  # Multi-valued surviving param expands; grouping preserves order.
+  expect_equal(
+    get_query(
+      "http://e.com/?utm_source=x&id=1&id=2",
+      query_handling = "filter", format = "list"
+    )[[1]],
+    list(id = c("1", "2"))
+  )
+  # decode = FALSE keeps the raw spelling in the list.
+  expect_equal(
+    get_query(
+      "http://e.com/?a=%26&b=1",
+      sort_params = TRUE, format = "list", decode = FALSE
+    )[[1]],
+    list(a = "%26", b = "1")
+  )
+  # A present query whose params are all filtered out becomes an empty list.
+  expect_equal(
+    get_query(
+      "http://e.com/?utm_source=x",
+      query_handling = "filter", format = "list"
+    )[[1]],
+    list()
+  )
+})
+
+test_that("get_query is vectorized across the engine path", {
+  urls <- c(
+    "http://e.com/?utm_source=x&id=1",
+    "http://e.com/nopath",
+    "http://e.com/?fbclid=y"
+  )
+  expect_equal(
+    unname(get_query(urls, query_handling = "filter")),
+    c("id=1", NA, "")
+  )
 })
 
 test_that("get_fragment, get_port, get_user, get_password, get_userinfo work", {
@@ -223,46 +533,54 @@ test_that("get_subdomain returns expected values", {
   expect_equal(labels[[1]], c("www", "blog"))
 })
 
-test_that(".get_registered_domain handles known cases correctly", {
-  expect_equal(rurl:::.get_registered_domain("example.com"), "example.com")
+test_that(".psl_registered_domain handles known cases correctly", {
+  expect_equal(rurl:::.psl_registered_domain("example.com"), "example.com")
   expect_equal(
-    rurl:::.get_registered_domain("sub.example.co.uk"),
+    rurl:::.psl_registered_domain("sub.example.co.uk"),
     "example.co.uk"
   )
   expect_equal(
-    rurl:::.get_registered_domain("sub.dev-builder.code.com"),
+    rurl:::.psl_registered_domain("sub.dev-builder.code.com"),
     NA_character_
   )
   expect_equal(
-    rurl:::.get_registered_domain("city.kawasaki.jp"),
+    rurl:::.psl_registered_domain("city.kawasaki.jp"),
     "city.kawasaki.jp"
   )
   expect_equal(
-    rurl:::.get_registered_domain("foo.bar.city.kawasaki.jp"),
+    rurl:::.psl_registered_domain("foo.bar.city.kawasaki.jp"),
     "city.kawasaki.jp"
   )
-  expect_equal(rurl:::.get_registered_domain("unknown.tld"), NA_character_)
-  expect_equal(rurl:::.get_registered_domain("localhost"), NA_character_)
+  expect_equal(rurl:::.psl_registered_domain("unknown.tld"), NA_character_)
+  expect_equal(rurl:::.psl_registered_domain("localhost"), NA_character_)
 })
 
-test_that(".get_registered_domain handles suffix-only domains", {
-  expect_true(is.na(rurl:::.get_registered_domain("com")))
-  expect_true(is.na(rurl:::.get_registered_domain("co.uk")))
+test_that(".psl_registered_domain handles suffix-only domains", {
+  expect_true(is.na(rurl:::.psl_registered_domain("com")))
+  expect_true(is.na(rurl:::.psl_registered_domain("co.uk")))
+})
+
+test_that("PSL seam helpers handle NA/empty/section edge cases", {
+  expect_true(is.na(rurl:::.psl_registered_domain(NA_character_, "all")))
+  expect_true(is.na(rurl:::.psl_registered_domain("", "all")))
+  expect_equal(
+    rurl:::.psl_registered_domain("sub.example.com", "all"),
+    "example.com"
+  )
+  # example.net is ICANN-only, so under the private section it has no suffix.
+  expect_true(is.na(rurl:::.psl_registered_domain("example.net", "private")))
+
+  expect_true(is.na(rurl:::.psl_public_suffix(NA_character_, "all")))
+  expect_true(is.na(rurl:::.psl_public_suffix("", "all")))
+  expect_equal(rurl:::.psl_public_suffix("sub.example.com", "all"), "com")
 })
 
 test_that("get_parse_status falls through to final error", {
-  mock_parse <- function(...) list(scheme = "gopher", host = "example.com")
-  ns <- asNamespace("rurl")
-  original <- get("safe_parse_url", envir = ns)
-  unlockBinding("safe_parse_url", ns)
-  assign("safe_parse_url", mock_parse, envir = ns)
-  lockBinding("safe_parse_url", ns)
-  on.exit({
-    unlockBinding("safe_parse_url", ns)
-    assign("safe_parse_url", original, envir = ns)
-    lockBinding("safe_parse_url", ns)
-  })
-  expect_identical(unname(get_parse_status("whatever")), "error")
+  # A disallowed scheme (gopher) is rejected in phase 1, so the row is a null
+  # row and get_parse_status reports its "error" null_value. (Previously this
+  # mocked safe_parse_url to return a schemeless list; accessors now route
+  # through the vector engine, so the contract is exercised with a real input.)
+  expect_identical(get_parse_status("gopher://example.com"), "error")
 })
 
 test_that("get_tld matches correct TLDs across sources", {
@@ -345,9 +663,59 @@ test_that("get_tld handles internationalized domain names (IDNs)", {
   expect_identical(unname(get_tld("石川.jp")), "石川.jp")
   expect_identical(unname(get_tld("münchen.de")), "de")
   expect_identical(unname(get_tld("παράδειγμα.ελ")), "ελ")
-  expect_identical(unname(get_tld("xn--hxajbheg2az3al.xn--qxam")), "ελ")
   expect_identical(unname(get_tld("中国.中国")), "中国")
-  expect_identical(unname(get_tld("xn--fiqs8s.xn--fiqs8s")), "中国")
+  # Default host_encoding = "keep" mirrors the input spelling: an A-label host
+  # yields an A-label TLD.
+  expect_identical(
+    unname(get_tld("xn--hxajbheg2az3al.xn--qxam")), "xn--qxam"
+  )
+  expect_identical(unname(get_tld("xn--fiqs8s.xn--fiqs8s")), "xn--fiqs8s")
+  # host_encoding = "unicode" decodes A-label hosts back to Unicode.
+  expect_identical(
+    unname(get_tld("xn--hxajbheg2az3al.xn--qxam", host_encoding = "unicode")),
+    "ελ"
+  )
+  expect_identical(
+    unname(get_tld("xn--fiqs8s.xn--fiqs8s", host_encoding = "unicode")), "中国"
+  )
+})
+
+test_that("domain accessors honor host_encoding (keep/idna/unicode)", {
+  uni <- "https://café.münchen.de/x"
+  ace <- "https://xn--caf-dma.xn--mnchen-3ya.de/x"
+
+  # keep: mirror the input spelling on both directions.
+  expect_identical(unname(get_domain(uni)), "münchen.de")
+  expect_identical(unname(get_domain(ace)), "xn--mnchen-3ya.de")
+  expect_identical(unname(get_subdomain(uni)), "café")
+  expect_identical(unname(get_subdomain(ace)), "xn--caf-dma")
+
+  # idna: force A-labels regardless of input spelling.
+  expect_identical(
+    unname(get_domain(uni, host_encoding = "idna")), "xn--mnchen-3ya.de"
+  )
+  expect_identical(
+    unname(get_subdomain(uni, host_encoding = "idna")), "xn--caf-dma"
+  )
+  expect_identical(
+    unname(get_tld(ace, host_encoding = "idna")), "de"
+  )
+
+  # unicode: decode regardless of input spelling.
+  expect_identical(
+    unname(get_domain(ace, host_encoding = "unicode")), "münchen.de"
+  )
+  expect_identical(
+    unname(get_subdomain(ace, host_encoding = "unicode")), "café"
+  )
+
+  # A pure-ASCII host is identical across all three encodings.
+  for (enc in c("keep", "idna", "unicode")) {
+    expect_identical(
+      unname(get_domain("https://sub.example.co.uk/", host_encoding = enc)),
+      "example.co.uk"
+    )
+  }
 })
 
 test_that("get_tld handles edge cases and unexpected inputs gracefully", {
@@ -359,15 +727,20 @@ test_that("get_tld handles edge cases and unexpected inputs gracefully", {
   expect_identical(unname(get_tld("http://192.168.1.1")), NA_character_)
   expect_identical(unname(get_tld("ftp://example.com")), "com")
 
-  # IDN edge cases
-  expect_identical(unname(get_tld("xn--fiqs8s.xn--fiqs8s")), "中国")
+  # IDN edge cases (host_encoding = "unicode" decodes A-labels)
+  expect_identical(
+    unname(get_tld("xn--fiqs8s.xn--fiqs8s", host_encoding = "unicode")), "中国"
+  )
   expect_identical(unname(get_tld("中国.中国")), "中国")
-  expect_identical(unname(get_tld("xn--hxajbheg2az3al.xn--qxam")), "ελ")
+  expect_identical(
+    unname(get_tld("xn--hxajbheg2az3al.xn--qxam", host_encoding = "unicode")),
+    "ελ"
+  )
   expect_identical(unname(get_tld("παράδειγμα.ελ")), "ελ")
 
   # Weird but valid cases
   expect_identical(unname(get_tld(".com")), NA_character_)
-  expect_true(is.na(rurl:::.get_registered_domain(".com")))
+  expect_true(is.na(rurl:::.psl_registered_domain(".com")))
   expect_identical(unname(get_tld("example")), NA_character_)
   expect_identical(unname(get_tld("example..com")), NA_character_)
 })
@@ -375,15 +748,16 @@ test_that("get_tld handles edge cases and unexpected inputs gracefully", {
 test_that(
   ".normalize_and_punycode handles Unicode normalization and punycode encoding",
   {
-  expect_match(
-    unname(rurl:::.normalize_and_punycode("παράδειγμα.ελ")),
-    "^xn--"
-  )
-  expect_identical(
-    unname(rurl:::.normalize_and_punycode("ascii-only.com")),
-    "ascii-only.com"
-  )
-})
+    expect_match(
+      unname(rurl:::.normalize_and_punycode("παράδειγμα.ελ")),
+      "^xn--"
+    )
+    expect_identical(
+      unname(rurl:::.normalize_and_punycode("ascii-only.com")),
+      "ascii-only.com"
+    )
+  }
+)
 
 test_that(".normalize_and_punycode returns NA_character_ on error", {
   fail_encode <- function(x) stop("fail")
@@ -395,16 +769,46 @@ test_that(".normalize_and_punycode returns NA_character_ on error", {
   expect_identical(unname(result), NA_character_)
 })
 
+test_that(".normalize_and_punycode recovers via non-strict retry", {
+  # Force the strict encode to fail, then succeed on the non-strict retry,
+  # exercising the inner tryCatch recovery branch (strict error -> non-strict
+  # success). A non-default encode_fn bypasses the shared cache by design.
+  strict_fail_encode <- function(x, strict = TRUE) {
+    if (isTRUE(strict)) {
+      stop("strict encode failed")
+    }
+    "recovered-host.example"
+  }
+
+  result <- rurl:::.normalize_and_punycode(
+    "παράδειγμα.ελ",
+    encode_fn = strict_fail_encode
+  )
+  expect_identical(unname(result), "recovered-host.example")
+})
+
 test_that(".normalize_and_punycode handles NA and empty input", {
   expect_identical(
     unname(rurl:::.normalize_and_punycode(NA_character_)),
     NA_character_
   )
   expect_identical(unname(rurl:::.normalize_and_punycode("")), "")
+
+  identity_encode <- function(x, strict = TRUE) x
+  expect_identical(
+    unname(rurl:::.normalize_and_punycode(
+      NA_character_, encode_fn = identity_encode
+    )),
+    NA_character_
+  )
+  expect_identical(
+    unname(rurl:::.normalize_and_punycode("", encode_fn = identity_encode)),
+    ""
+  )
 })
 
 test_that("safe_parse_url handles www_handling options correctly", {
-  # www_handling = "strip"
+  # www_handling strip mode
   expect_equal(
     safe_parse_url("http://www.example.com", www_handling = "strip")$host,
     "example.com"
@@ -423,7 +827,7 @@ test_that("safe_parse_url handles www_handling options correctly", {
     "1.2.3.4"
   )
 
-  # www_handling = "keep"
+  # www_handling keep mode
   expect_equal(
     safe_parse_url("http://example.com", www_handling = "keep")$host,
     "www.example.com"
@@ -440,10 +844,10 @@ test_that("safe_parse_url handles www_handling options correctly", {
   # safe_parse_url with an effectively empty host after protocol strip might be
   # tricky to set up directly
   # Let's test the helper directly if possible, or ensure this path is hit.
-  # For safe_parse_url, if the input is just "http://", parsed_curl$host might
+  # For safe_parse_url, if the input is just "http://", parsed_web$host might
   # be NA or empty.
   # If input is "", it returns NULL early. If input is "http://", host is NA.
-  expect_true(is.null(safe_parse_url("http://", www_handling = "keep")$host))
+  expect_null(safe_parse_url("http://", www_handling = "keep")$host)
   # Test with IP, keep should not apply
   expect_equal(
     safe_parse_url("http://1.2.3.4", www_handling = "keep")$host,
@@ -568,11 +972,9 @@ test_that("host_encoding handles IDNA round-trips", {
 })
 
 test_that("safe_parse_url handles specific error conditions", {
-  # Test for line 187: original_looks_like_protocol &&
-  # !original_has_allowed_scheme
-  # This condition should lead to parse_status = "error" (and NULL return from
-  # safe_parse_url itself)
-  # Assuming gopher is not in allowed_prefixes.
+  # A URL that looks like it has a protocol but whose scheme is not allowed
+  # should yield parse_status "error" (and a NULL return from safe_parse_url
+  # itself), assuming gopher is not in allowed_prefixes.
   expect_null(unname(safe_parse_url("gopher://example.com")))
   # To be more robust, let's check parse_status via get_parse_status for this
   # case
@@ -614,16 +1016,70 @@ test_that(".punycode_to_unicode handles various inputs and known TLDs", {
   expect_equal(rurl:::.punycode_to_unicode("xn--mnchen-3ya.de"), "münchen.de")
 })
 
-test_that("Internal TLD helpers handle NA/empty/error conditions", {
-  # ._extract_tld_original_logic handles NA and empty input
-  expect_equal(
-    rurl:::._extract_tld_original_logic(
-      NA_character_, rurl:::.tld_all_set, "all"
+test_that(".punycode_to_unicode scalar seam handles decode test doubles", {
+  decode_map <- function(x, strict = FALSE) {
+    out <- x
+    out[x == "xn--p1ai"] <- "рф"
+    out[x == "bad"] <- NA_character_
+    out
+  }
+
+  expect_identical(
+    rurl:::.punycode_to_unicode(NA_character_, decode_fn = decode_map),
+    NA_character_
+  )
+  expect_identical(rurl:::.punycode_to_unicode("", decode_fn = decode_map), "")
+  expect_identical(
+    rurl:::.punycode_to_unicode("site.xn--p1ai", decode_fn = decode_map),
+    "site.рф"
+  )
+  expect_identical(
+    rurl:::.punycode_to_unicode("bad.xn--p1ai", decode_fn = decode_map),
+    "bad.рф"
+  )
+
+  wrong_shape_decode <- function(x, strict = FALSE) character(0)
+  expect_identical(
+    rurl:::.punycode_to_unicode(
+      "xn--p1ai.example", decode_fn = wrong_shape_decode
     ),
+    "xn--p1ai.example"
+  )
+})
+
+test_that(".punycode_to_unicode_vec falls back after batch decode failure", {
+  rurl_clear_caches()
+  withr::defer(rurl_clear_caches())
+
+  decode_one <- function(x, strict = FALSE) {
+    if (length(x) > 1L) {
+      stop("batch decode failed")
+    }
+    out <- x
+    out[x == "xn--p1ai"] <- "рф"
+    out[x == "xn--wgbh1c"] <- "مصر"
+    out
+  }
+
+  testthat::local_mocked_bindings(
+    puny_decode = decode_one,
+    .package = "punycoder"
+  )
+
+  expect_identical(
+    rurl:::.punycode_to_unicode_vec(c("xn--p1ai", "xn--wgbh1c")),
+    c("рф", "مصر")
+  )
+})
+
+test_that("Internal TLD helpers handle NA/empty/error conditions", {
+  # .psl_public_suffix handles NA and empty input
+  expect_equal(
+    rurl:::.psl_public_suffix(NA_character_, "all"),
     NA_character_
   )
   expect_equal(
-    rurl:::._extract_tld_original_logic("", rurl:::.tld_all_set, "all"),
+    rurl:::.psl_public_suffix("", "all"),
     NA_character_
   )
 
@@ -701,7 +1157,7 @@ test_that("safe_parse_url validates and applies subdomain_levels_to_keep", {
 })
 
 test_that("port is returned as integer and vectorizes without error", {
-  # Regression: curl returns port as character; the parser must coerce so that
+  # Regression: the parse returns port as character; it must be coerced so that
   # scalar, vector, and accessor paths all yield integer / NA_integer_.
   res <- safe_parse_url("http://example.com:8080/path")
   expect_identical(res$port, 8080L)
@@ -725,4 +1181,164 @@ test_that("bracketed IPv6 hosts are detected as IP hosts", {
   expect_identical(unname(get_tld("http://[2001:db8::1]/x")), NA_character_)
   # IPv4 parity (already worked; guards against regressions).
   expect_true(safe_parse_url("http://192.168.1.1/x")$is_ip_host)
+})
+
+test_that("IPv6 literals with embedded dotted-quad IPv4 are detected", {
+  # RURL-tvfpeocg: ::ffff:127.0.0.1 and friends used to fall through to the
+  # TLD path (is_ip_host = FALSE, warning-invalid-tld). Both the dotted and
+  # hex spellings of the same address must now classify identically.
+  for (u in c(
+    "http://[::ffff:127.0.0.1]/", "http://[::ffff:7f00:1]/",
+    "http://[::ffff:0808:0808]/", "http://[64:ff9b::8.8.8.8]/",
+    "http://[::127.0.0.1]/"
+  )) {
+    res <- safe_parse_url(u)
+    expect_true(res$is_ip_host, info = u)
+    expect_equal(res$parse_status, "ok", info = u)
+    expect_true(is.na(res$tld), info = u)
+  }
+})
+
+test_that("get_*() accessors error if passed a parsed object, not a string", {
+  # Use a hand-constructed list so the test does not depend on safe_parse_url()
+  # being callable in the current R environment.
+  p <- list(
+    scheme = "https", host = "example.com", port = NA_integer_,
+    path = "/x", query = NA_character_, fragment = NA_character_,
+    user = NA_character_, password = NA_character_, domain = "example.com",
+    tld = "com", is_ip_host = FALSE, clean_url = "https://example.com/x",
+    parse_status = "ok", original_url = "https://example.com/x"
+  )
+
+  # .extract_from_urls path
+  expect_error(get_host(p), "character vector")
+  expect_error(get_clean_url(p), "character vector")
+  expect_error(get_domain(p), "character vector")
+  expect_error(get_scheme(p), "character vector")
+  expect_error(get_path(p), "character vector")
+  expect_error(get_fragment(p), "character vector")
+  expect_error(get_port(p), "character vector")
+  expect_error(get_user(p), "character vector")
+  expect_error(get_password(p), "character vector")
+  expect_error(get_userinfo(p), "character vector")
+  expect_error(get_tld(p), "character vector")
+  expect_error(get_parse_status(p), "character vector")
+
+  # lapply paths
+  expect_error(get_query(p), "character vector")
+  expect_error(get_subdomain(p), "character vector")
+})
+
+# ---------------------------------------------------------------------------
+# The standards axis on get_password() / get_query() / get_fragment() /
+# get_port() (RURL-bznwelxn, epic RURL-rnobeauh)
+#
+# These four accessors took only presentation dials, so each was unable to
+# return a value its own safe_parse_url() column carries. The tests below pin
+# BOTH halves of every fix: the WHATWG spelling is now reachable, and the
+# source-preserving branches (rfc3986, and no selector at all) are byte-for-
+# byte what they were. That second half is the load-bearing one -- sitemapr
+# and pagerankr read these columns with no url_standard set.
+# ---------------------------------------------------------------------------
+
+test_that("get_password() reaches the WHATWG userinfo spelling", {
+  u <- "http://u:p:q@example.com/"
+  # A ":" inside the password is percent-encoded by the userinfo encode set.
+  expect_identical(get_password(u, url_standard = "whatwg"), "p%3Aq")
+  # ... and NOT under the source-preserving profiles.
+  expect_identical(get_password(u, url_standard = "rfc3986"), "p:q")
+  expect_identical(get_password(u), "p:q")
+  # The accessor now agrees with the column it mirrors.
+  expect_identical(
+    get_password(u, url_standard = "whatwg"),
+    safe_parse_url(u, url_standard = "whatwg")$password
+  )
+})
+
+test_that("get_query() reaches the WHATWG query spelling", {
+  u <- "http://example.com/p?a=b\"c"
+  # Only visible undecoded: decoding collapses both spellings.
+  expect_identical(
+    get_query(u, decode = FALSE, url_standard = "whatwg"), "a=b%22c"
+  )
+  expect_identical(get_query(u, decode = FALSE), "a=b\"c")
+  expect_identical(
+    get_query(u, decode = FALSE, url_standard = "whatwg"),
+    safe_parse_url(u, url_standard = "whatwg")$query
+  )
+  # The axis threads through the filtering engine too, not just the fast path.
+  expect_identical(
+    get_query("http://example.com/?utm_source=n&id=4\"2",
+      query_handling = "filter", decode = FALSE, url_standard = "whatwg"
+    ),
+    "id=4%222"
+  )
+  # ... and through the list shape.
+  expect_identical(
+    get_query(u, format = "list", decode = FALSE,
+      url_standard = "whatwg")[[1]]$a,
+    "b%22c"
+  )
+})
+
+test_that("get_fragment() reaches the WHATWG fragment spelling", {
+  u <- "http://example.com/p#a\"b"
+  expect_identical(get_fragment(u, url_standard = "whatwg"), "a%22b")
+  expect_identical(get_fragment(u), "a\"b")
+  expect_identical(
+    get_fragment(u, url_standard = "whatwg"),
+    safe_parse_url(u, url_standard = "whatwg")$fragment
+  )
+  # The fragment encode set is NOT the query set: "^" is a query-set byte but
+  # a fragment-set survivor, so this pins that the right encoder is wired.
+  expect_identical(get_fragment("http://example.com/p#a^b",
+    url_standard = "whatwg"), "a^b")
+})
+
+test_that("get_port() reports the WHATWG default-port drop", {
+  # WHATWG discards a default port during PARSING, so it is absent from the
+  # parsed URL entirely -- distinct from port_handling, which only governs
+  # whether a port is rendered into clean_url.
+  expect_identical(get_port("http://example.com:80/",
+    url_standard = "whatwg"), NA_integer_)
+  expect_identical(get_port("http://example.com:80/",
+    url_standard = "rfc3986"), 80L)
+  expect_identical(get_port("http://example.com:80/"), 80L)
+  # A non-default port is unaffected in every profile.
+  for (std in list(NULL, "rfc3986", "whatwg")) {
+    expect_identical(
+      get_port("http://example.com:8080/", url_standard = std), 8080L
+    )
+  }
+})
+
+test_that("the new axes leave the default output byte-identical", {
+  urls <- c(
+    "http://u:p@example.com:8080/a/b?x=1&y=2#frag",
+    "https://example.com/",
+    "ftp://alice:secret@ftp.example.com/file.txt",
+    "not a url"
+  )
+  # Passing the arguments at their documented defaults must be a no-op, which
+  # is what keeps the NULL-selector compatibility story airtight.
+  expect_identical(
+    get_password(urls),
+    get_password(urls, scheme_policy = "infer", scheme_acceptance = "web",
+      url_standard = NULL)
+  )
+  expect_identical(
+    get_port(urls),
+    get_port(urls, scheme_policy = "infer", scheme_acceptance = "web",
+      url_standard = NULL)
+  )
+  expect_identical(
+    get_fragment(urls),
+    get_fragment(urls, scheme_policy = "infer", scheme_acceptance = "web",
+      url_standard = NULL)
+  )
+  expect_identical(
+    get_query(urls, decode = FALSE),
+    get_query(urls, decode = FALSE, scheme_policy = "infer",
+      scheme_acceptance = "web", url_standard = NULL)
+  )
 })
