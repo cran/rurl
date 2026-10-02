@@ -30,7 +30,8 @@ safe_parse_url(
   url_standard = NULL,
   engine = NULL,
   profile = NULL,
-  credential_handling = c("strip", "reject")
+  credential_handling = c("strip", "reject"),
+  path_normalisation = NULL
 )
 }
 \arguments{
@@ -114,9 +115,11 @@ index/default pages. Defaults to "keep".
 (case-insensitive).}
 }}
 
-\item{path_normalization}{How to normalize path structure. Defaults to
-"none". rurl owns dot-segment resolution: the path is read from the input
-verbatim (never from a pre-normalized path), so \code{"none"} preserves
+\item{path_normalization, path_normalisation}{How to normalize path
+structure. Defaults to "none". \code{path_normalisation} is the British
+spelling, accepted as an alias: pass one or the other, not both. rurl owns
+dot-segment resolution: the path is read from the input verbatim (never
+from a pre-normalized path), so \code{"none"} preserves
 \code{.} / \code{..} segments (\code{/a/../b} stays \code{/a/../b}) and only
 the settings below change them. Resolution follows RFC 3986 section 5.2.4 and
 acts on \emph{literal} \code{.}/\code{..} segments only — a percent-encoded
@@ -423,8 +426,9 @@ reported as NA.
 \item \code{user}: The user name for authentication; never percent-decoded.
 Under \code{url_standard = "whatwg"} it carries the standard's percent-encoded
 spelling (the userinfo percent-encode set is applied, so
-"http://a^b@host/" reports "a\%5Eb"); under \code{url_standard = "rfc3986"} or
-no selector it is the raw source spelling, exactly as written in the URL.
+\code{"http://a^b@host/"} reports \code{"a\%5Eb"}); under
+\code{url_standard = "rfc3986"} or no selector it is the raw source spelling,
+exactly as written in the URL.
 Empty is reported as NA.
 \item \code{password}: The password for authentication, with the same
 encoding contract as \code{user} (so a ":" inside a WHATWG password is
@@ -443,7 +447,7 @@ these are stable identity keys — a Unicode host and its A-label share
 one \code{domain_ascii} — so consumers can build an encoding-independent key
 from a single parse. NA under the same conditions as \code{domain}.
 \item \code{tld_ascii}, \code{tld_unicode}: The public suffix (TLD) in both
-canonical spellings, the \code{tld} analogue of \code{domain_ascii}/
+canonical spellings, the \code{tld} analog of \code{domain_ascii}/
 \code{domain_unicode}. NA under the same conditions as \code{tld}.
 \item \code{is_ip_host}: Logical, TRUE if the host is an IP address.
 \item \code{clean_url}: A normalized canonical key reconstructed from

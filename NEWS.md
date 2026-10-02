@@ -1,3 +1,40 @@
+## rurl 3.1.0
+
+### New features
+
+- Exported names stay in US English, and their British spellings are now accepted as aliases: `serialise_url()` is the same function as `serialize_url()`, and `get_clean_url()`, `get_path()`, `safe_parse_url()` and `safe_parse_urls()` take `path_normalisation` as an alias of `path_normalization`. The alias is the last formal, so no positional call shifts; supplying both spellings is an error, and the alias counts as explicitly supplied in the `url_standard` conflict check. `url_profile()`, `canonical_join()` and `resolve_url()` accept it through `...`. An abbreviated argument such as `path_normal =` no longer partially matches, because it now fits both spellings; spell the name in full (`SEOR-qwomlgjd`, `SEOR-oytkybis`).
+- `check_schemes()` reports a sixth reasons token, `no-authority`, for a URL that has a scheme but carries no authority: `mailto:someone@example.com`, `javascript:alert(1)`, `foo:bar`. It is computed from the parse, not from `get_host()`, and never contradicts the parse record: under `url_standard = "whatwg"` only a non-special scheme can get it, because the WHATWG URL Standard gives every special-scheme URL a host with or without `//` (`http:example.com` has host `example.com`); under `"rfc3986"` an authority exists only after `//` (RFC 3986 §3), so `http:example.com` gets it there. A row with no scheme never does. `?check_schemes` and ruling RUL-021 had said such a token could not be computed because `get_host()` reads the `@` in `mailto:someone@example.com` as a userinfo delimiter. That was wrong: the parse record's `host` is `NA` there, and `get_host()` returns the recipient's domain as ADR 0012 D7 extraction metadata (evidence in RURL-hlbbbpdy). Ruling RUL-022 records the correction. No parse result changes (RURL-ktpjscne).
+- `get_url_diagnostics()` reports a new host fact, `domain-invalid-ace-label`, for a host with a label that begins `xn--` but is not a genuine A-label: its Punycode decode fails, or the decoded label fails the UTS #46 Validity Criteria (§4.1) under the WHATWG URL Standard's non-strict flags. `xn--a.example`, `xn--.example` and `xn--ASCII-.example` get it; `xn--bcher-kva.example` does not. Each label is judged alone, so a label that fails the Bidi rule only because of another label does not fire it. The parse does not move: the WHATWG host parser runs the domain parser with `beStrict` = false, which keeps an ASCII host lowercased when ToASCII fails, and WPT pins `https://xn--/` as a success. The token fires under both standards, like the rest of the `domain-*` family. Unlike the rest of the vocabulary, it is complete: it fires on every host meeting its predicate, so a consumer may rely on its absence. `check_hosts()` lists it among the `reasons`. rurl checks UTS #46 criterion 4 (a decoded label must not begin with `xn--`) itself, because punycoder 1.2.1 does not. Ruling RUL-023 records the scope (RURL-vicyvlvh).
+
+### Bug fixes
+
+- `host_encoding = "unicode"` again renders an A-label whose ASCII part holds a code point other than a letter, digit or hyphen: `get_host("http://xn--a_-wia.example/", host_encoding = "unicode")` is `a_ä.example` under every `url_standard`. punycoder 1.3.0 stopped decoding such labels, so the host kept its `xn--` spelling, although RFC 3492 §6.2 accepts any basic code point and UTS #46 §4 (ToUnicode, with `UseSTD3ASCIIRules` false, as the WHATWG URL Standard's domain to Unicode uses it) decodes them. rurl now decodes a label punycoder rejects with its own RFC 3492 decoder, and renders these hosts the same under punycoder 1.2.1 and 1.3.0. An A-label whose ASCII part holds `#`, `/`, `:`, `?` or `@` keeps its spelling, so a rendered host never gains a delimiter (RFC 3986 §3.2.2). Under punycoder 1.2.1 that moves one reachable case: `url_standard = "rfc3986"` with a percent-encoded colon, such as `xn--;~%3A_-8qa3179i`, which rendered a `:` inside the host. The frozen `NULL` profile renders as it did under punycoder 1.2.1 (RURL-oizpyvdz).
+- Under `url_standard = "whatwg"`, a host whose UTS-46 mapping produces a forbidden domain code point now fails the parse, as the WHATWG URL Standard's host parser requires: it tests for one on the result of domain to ASCII (host parsing, the "domain-invalid-code-point" step). The gate tested only the source spelling, so the fullwidth `＃` `／` `？` `：` `％` (U+FF03, U+FF0F, U+FF1F, U+FF1A, U+FF05) and the no-break and ideographic spaces (U+00A0, U+3000) passed layer 1, and `serialize_url()` wrote the mapped `#` `/` `?` `:` `%` or space into the host, where a re-parse reads a different host: `http://127.0.0.1＃.evil.com/` serialized to `http://127.0.0.1#.evil.com/`. These now get `layer1_syntax_verdict = "fail"`, `parse_status = "error"` and an `NA` serialization. `rfc3986` and the frozen `NULL` profile do not move (RURL-crsrkcoh).
+- `safe_parse_url()`, `safe_parse_urls()` and the accessors built on them no longer fail on a long URL with "variable names are limited to 10000 bytes". The caches store each entry under its key as an R variable name, which R caps at 10,000 bytes, and non-ASCII characters are escaped in the key at six bytes each, so the error came from about 9,900 ASCII characters or about 1,700 non-ASCII ones. An internationalized host whose ASCII form passed 10,000 bytes failed the same way through the Punycode cache, even with `rurl_cache_config(full_parse = FALSE)`. A key past the cap now skips the cache and is recomputed on every call; results are unchanged (RURL-tlmoybsl).
+
+### Documentation
+
+- `BugReports` points at <https://gitlab.com/bart-turczynski/rurl/-/issues>, the form R's CRAN incoming check requires for a gitlab.com tracker; a browser following that link is redirected to `/-/work_items` (RURL-nomzooml).
+- The human-facing tracker links in `SECURITY.md`, `codemeta.json` and `.bestpractices.json` now give `https://gitlab.com/bart-turczynski/rurl/-/work_items`, the address GitLab serves directly; `DESCRIPTION`'s `BugReports:` deliberately keeps the `/-/issues` form, because only that form clears the CRAN incoming check (RURL-ahatycrd).
+- The help pages and `NEWS.md` are now spelled in US English throughout, matching the package's declared `Language: en-US`, and `inst/WORDLIST` no longer admits British spellings (SEOR-kfiqpymb).
+
+### Internal
+
+- The agent instructions point at the house `agent-workflow` and `fp` skills for the git workflow, `.Rbuildignore` no longer lists the `FP_CLAUDE.md` file this repository never had, and `design/agent-workflow.md` records that an anonymous GitLab 404 needs a same-run control before it says anything about this project (SEOR-ipwcbcov, RURL-zrlkftor).
+- `scripts/bestpractices-url.py` is vendored from seor, with a pre-push hook that runs its offline self-test when the script changes. `.bestpractices.json` now names GitLab as the home of the project and GitHub only as its read-only mirror, and describes today's CI: GitLab pipelines on `main` run the consistency gates, while the test suite runs in the pre-push gate and in CI only on tags or by hand (SEOR-grrcptww).
+- `.gitlab-ci.yml` now carries a top-level `workflow:` block that suppresses both the branch pipeline and the merge-request pipeline, leaving exactly one pipeline per merge, on `main`. A feature-branch push and an API-triggered pipeline on a non-default branch now create no pipeline at all; a pipeline started by hand from Build > Pipelines > Run pipeline still works on any ref and runs `gates`, `citation-version` and `check` there, while `pages` is pinned to `main` so a branch can be verified but never published. The local pre-push gate remains the thing that verifies a change before it merges (SEOR-bmgkzhvy).
+- The OSS Index dependency audit in `tests/testthat/test-security.R` now scopes to hard dependencies (`Depends` + `Imports`) instead of the `Suggests` tree, which pulled in oysteR's own dependencies and failed the gate on a `curl` vulnerability that rurl does not ship (RURL-mafkcwnu).
+- The OSS Index audit in `tests/testthat/test-security.R` now requires every reported advisory to carry an explicit disposition in an allow-list (`tests/testthat/helper-security.R`, empty today because nothing is reported): an unlisted advisory fails, a listed advisory that is no longer reported fails, and a row past its review date warns. Under `OSSINDEX_AUDIT_REQUIRED=true` a missing `oysteR` or missing credentials fail instead of skipping. The pre-push gate's `LC_ALL=C` test cell no longer runs this audit or the OSV audit in `tests/testthat/test-osv.R`, so a new upstream advisory cannot block an unrelated push; run them with `testthat::test_local(filter = "^(security|osv)$")` (`SEOR-fftbjnpl`).
+- `scripts/check-bugreports.py`, ported from pagerankr, now guards the `BugReports` split: `DESCRIPTION` must keep the `/-/issues` form CRAN's incoming check accepts, `codemeta.json`, `SECURITY.md` and `.bestpractices.json` must link `/-/work_items`, and no other human-facing file may reintroduce a `/-/issues` link. It runs as its own pre-push hook next to `check-citation` and in the `citation-version` CI job (SEOR-ocbtrrnl).
+- `.gitlab-ci.yml` gains `osv-audit` and `security-audit` jobs that run `tests/testthat/test-osv.R` and `tests/testthat/test-security.R` against an installed rurl, only in a pipeline schedule that sets `SCHEDULE_KIND=dependency-audit`; `security-audit` sets `OSSINDEX_AUDIT_REQUIRED=true`, so missing OSS Index credentials fail the job instead of skipping. Nothing else runs these audits since they left the pre-push gate, and the schedule and the `OSSINDEX_USER`/`OSSINDEX_TOKEN` variables still have to be created on the project. `tools/local-ci.sh --all` leaves schedule-only jobs out (SEOR-fftbjnpl).
+- `tools/cran-comments-gate.R` no longer requires the `cran-comments.md` span pin to name the development version in `DESCRIPTION`. It checks the pin against the release that version names — `3.0.1` while at `3.0.1.9000` — so the release checklist's post-release version bump is executable, and `--online` compares whichever end of the span CRAN actually serves in each phase (RURL-efbcrhjc).
+- `tools/curl-zero-gate.R` now checks that rurl does not depend on curl, and no longer polices the word. The raw-text scan (C6), its path allowlist, the staleness check on that allowlist (C0) and the oracle-provenance exemption are gone, so a comment, NEWS entry, design note, fixture or `inst/WORDLIST` entry that names curl or libcurl passes. C5 now fails only on a `\link[curl]{...}` cross-reference or a curl call in an Rd file's `\examples` or `\usage`, not on prose. The DESCRIPTION, NAMESPACE, parsed-code and clean-room checks are unchanged, and the self-test now covers a curl load in the clean room (RURL-dtzvekmf).
+- `.lintr` no longer carries a `#` comment header: `read.dcf()` skips comment lines only from R 4.6, so on R 4.5 and older `lintr::lint_package()` aborted with `Invalid DCF format` and the package got no lint at all. The rationale for each deviation from the goodpractice linter set now lives in `design/verification.md`, with the rule to keep `.lintr` comment-free and ASCII-only (SEOR-qfxolldq).
+- `tools/local-ci.sh` now runs each job script with `bash` when the job's image has it and with POSIX `sh` otherwise, as the GitLab runner does. The `citation-version` job's image, `python:3.13-alpine`, ships only `sh`, so the runner failed that job before any of its commands ran. A failing command in a `sh`-only image still fails the job (RURL-dswufxky).
+- `tools/local-ci-plan.R` now plans a job whose `script:` holds a block-scalar (`- |`) entry, so `tools/local-ci.sh --all` no longer aborts at the `pages` job with "a script entry spans multiple lines". The block is emitted as one entry, verbatim, the way the GitLab runner writes it into the job shell: it runs as one unit, and a failing command inside it fails the job. `--list` shows it under a single `$`, and every job without a block entry plans byte-identically to before. A new `--self-test` mode pins the single-line and the block rendering, and runs both under `bash` (RURL-gysfdtcd).
+- The `check` and `pages` CI jobs install `hunspell` from CRAN over Debian's `r-cran-hunspell`. Debian's build drops the bundled dictionaries for the system `en_US.aff`, whose `WORDCHARS` keeps digits inside a token, so in the `r-base` container `spelling::spell_check_package()` flagged 61 words, such as `PV1` and `sha256`, that a CRAN build of `hunspell` checks as `PV` and `sha` and passes. The spelling step now reads the same dictionaries locally and in CI (RURL-czvqosis).
+- The gate now runs `Rscript tools/local-ci-plan.R --self-test`. `tools/verify-manifest.yml` declares it as a self-test-only `local-ci-plan` job, so `tools/verify.R` selects it whenever `tools/local-ci-plan.R` changes, runs it on `--release` and whenever it cannot tell what changed, and fails the run when a case fails. Until now nothing ran it (RURL-fzeadcfc).
+
 ## rurl 3.0.1
 
 ### Internal
@@ -172,7 +209,7 @@
   (plus ws/wss under `url_standard = "whatwg"`) — is now parsed by
   `R/parse-web.R`. Every other route already had an in-tree parser.
 
-  **Output is unchanged.** This was verified as a behaviour-preserving engine
+  **Output is unchanged.** This was verified as a behavior-preserving engine
   swap before the dependency was dropped: 106,898 inputs were compared field by
   field against `curl_parse_url()` — a structural grid, a per-octet sweep of
   every URL position, an IPv6/IPv4/percent-escape fuzz corpus, the WPT
@@ -183,7 +220,7 @@
 
   This is flagged breaking only because a declared dependency disappears: code
   that relied on `rurl` to load `curl` transitively must now declare `curl`
-  itself. Nothing in `rurl`'s own behaviour changed.
+  itself. Nothing in `rurl`'s own behavior changed.
 
   One improvement falls out of it. A host or userinfo carrying invalid UTF-8
   used to be accepted or rejected depending on the session locale, because
@@ -206,7 +243,7 @@
   **Results are unchanged.** The warning is purely additive, and byte-identical
   output was verified across ten dial configurations, so no caller is silently
   re-matched. This is flagged breaking only because a new condition is
-  *signalled*: code running under `options(warn = 2)`, or asserting with
+  *signaled*: code running under `options(warn = 2)`, or asserting with
   `expect_silent()`, will now see an error where it previously saw none. Because
   the condition is classed it can be silenced without hiding other warnings:
 
@@ -718,7 +755,7 @@
   ("a URI that uses the generic syntax for authority with an empty path should be
   normalized to a path of `/`"), keyed on the authority delimiter rather than on
   the scheme — so it also fires on a non-special scheme (`foo://h` normalizes to
-  `foo://h/`), where the previous behaviour depended on which parser owned the
+  `foo://h/`), where the previous behavior depended on which parser owned the
   row rather than on any rule. So `urn://:443` normalizes to `urn://:443/`, and
   likewise for `mailto:` and `data:`. Scheme-specific conformance is orthogonal:
   those strings remain invalid URNs, `mailto` URIs and data URLs under RFC 8141,
@@ -1207,7 +1244,7 @@
   syntax under the RFC.
 
 - **`url_standard = "rfc3986"` now applies RFC 3986's generic-URI grammar to
-  every scheme, not just `file:`.** The grammar gate travelled with the RFC 8089
+  every scheme, not just `file:`.** The grammar gate traveled with the RFC 8089
   `file:` overlay, so which parser happened to own a row decided whether the
   selected standard was enforced: `file://C|/x` was an error while
   `http://a|b/` parsed and reported `host = "a|b"` — though `"|"` is in none of
@@ -1840,7 +1877,7 @@
   skipped every fixture-backed block against the installed package and the
   headline conformance claim was checked only in the source tree. The fixture
   now ships, the suite executes under `R CMD check --as-cran`, and the
-  fixture's BSD-3-Clause notice is recorded in `LICENSE.note`. No behaviour
+  fixture's BSD-3-Clause notice is recorded in `LICENSE.note`. No behavior
   changed; the pinned bytes are the same bytes.
 
 - **The `Remotes:` block is gone; both siblings now install from CRAN.** `pslr`
@@ -1895,7 +1932,7 @@
   (`inst/bench/wpt-url-cases.json`) now covers every scheme, not four.** The
   success arm of the fixture was carved out to `http`/`https`/`ftp`/`file`,
   which silently dropped every non-special and opaque WPT success case — so
-  the oracle could not see a whole category of behaviour that
+  the oracle could not see a whole category of behavior that
   `scheme_acceptance = "general"` parses. The generator's scheme filter is
   removed entirely rather than extended with a list: WHATWG has exactly two
   scheme categories, so "success = any base-null non-failure case" is the
@@ -2000,7 +2037,7 @@
   place), and `internal-source` (the source is in this repository and git-dated).
   Recorded as a separate `not_applicable_reason` rather than as a fourth
   `pin_status` member, since the status axis is closed while the reason axis is
-  open — it went from one recognised reason to three inside a single 13-entry
+  open — it went from one recognized reason to three inside a single 13-entry
   record. PV9 requires the key on exactly the `not-applicable` entries and
   forbids it elsewhere, so a real pin cannot come to read as an exemption
   through a stale copy-paste; its self-test grew 81 → 92 assertions. Test
@@ -2064,7 +2101,7 @@
   optional. The group now carries a **verified** pin at `whatwg/url`
   `9dc3827f…`, and its gate derives *both* readings, requiring the RFC 1035
   §2.3.4 one to equal upstream's own verdict on every row, so the ten-row
-  disagreement is explained rather than tolerated. The lesson generalises: PV10
+  disagreement is explained rather than tolerated. The lesson generalizes: PV10
   makes the source-pinning question mandatory and PV9 makes the answer
   well-formed, but this group answered in the required shape and answered
   *wrongly*, while stating the derivation it denied two sentences later.
@@ -2255,7 +2292,7 @@
   List seam a web host uses (an email domain and an `http` host take identical
   branches). This reuses the existing accessors rather than adding
   email-specific equivalents, and unifies with the scheme-less `user@host`
-  behaviour. `get_user()` / `get_userinfo()` gain the `scheme_policy` /
+  behavior. `get_user()` / `get_userinfo()` gain the `scheme_policy` /
   `scheme_acceptance` / `url_standard` arguments to reach it. Extraction is
   metadata only — a `mailto:` `clean_url` and round-trip are unchanged — and is
   a strict no-op under the default `scheme_acceptance = "web"`. See ADR 0012 D7.
@@ -2727,7 +2764,7 @@
   `n`/`n_urls` counts, and a `would_drop` column previewing what
   `query_handling = "filter"` would remove. Returns a flat
   (long) `data.frame` at `level = "param"` or `level = "value"`. Param names
-  are grouped faithfully (case-sensitively) while `would_drop` honours
+  are grouped faithfully (case-sensitively) while `would_drop` honors
   `params_case_sensitive`, so you can audit a URL set before choosing a policy.
 - The `clean_url` query is deliberately **exempt from `case_handling`** (query
   values are case-sensitive — tokens, IDs, signatures). Under

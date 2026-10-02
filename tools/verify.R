@@ -34,10 +34,13 @@
 #   * cross-platform and multi-R-version checks -- this runs one platform,
 #     one R, and the GitHub matrix workflows that used to cover the rest
 #     (full-check, rhub) are deleted, so nothing does;
-#   * README.md re-render (the manifest's `readme` job), coverage, the OSV
-#     and security audits, news-version, and the determinism matrix (pkgdown
-#     is the release-time `pages` job in .gitlab-ci.yml) -- all need
-#     network, a pandoc/LaTeX toolchain, or a Docker matrix;
+#   * README.md re-render (the manifest's `readme` job), coverage,
+#     news-version, and the determinism matrix (pkgdown is the release-time
+#     `pages` job in .gitlab-ci.yml) -- all need network, a pandoc/LaTeX
+#     toolchain, or a Docker matrix;
+#   * the OSV and OSS Index advisory audits (test-osv.R, test-security.R).
+#     The locale cell EXCLUDES them by name and `R CMD check` skips them
+#     (NOT_CRAN unset), so no stage here runs them -- see stage_locale();
 #   * the C7 curl clean room, which needs its own R CMD check against a poisoned
 #     library. `--release` adds it; the default does not, because it doubles the
 #     slowest stage to re-prove a criterion that only matters at release.
@@ -78,7 +81,7 @@
 # Usage:
 #   Rscript tools/verify.R            # gates + relevant self-tests + full gate
 #   Rscript tools/verify.R --gates    # gates + relevant self-tests ONLY
-#   Rscript tools/verify.R --fast     # the above plus lint
+#   Rscript tools/verify.R --fast     # the above plus lint and spelling
 #   Rscript tools/verify.R --release  # everything, plus the curl clean room
 #   Rscript tools/verify.R --verbose  # print every step's log, passing included
 #   Rscript tools/verify.R --list     # print the stage plan and exit
@@ -326,6 +329,24 @@ stage_lint <- function() {
   list(run_step("lintr::lint_package()", "Rscript", c("-e", shQuote(code))))
 }
 
+# Spelling (SEOR-mtbzfroz). `R CMD check` spell-checks DESCRIPTION only when an
+# English aspell/hunspell dictionary is installed, and on a machine without one
+# it skips the check without a word -- so a typo first surfaced as win-builder's
+# NOTE, after submission. spelling::spell_check_package() bundles its own
+# dictionaries and also covers man/, vignettes and NEWS.md. Words it does not
+# know but that are real go in inst/WORDLIST; a typo gets fixed at its source.
+stage_spelling <- function() {
+  cat("[spelling] spelling::spell_check_package()\n")
+  code <- paste(
+    "bad <- spelling::spell_check_package()",
+    "if (nrow(bad)) { print(bad); quit(status = 1) }",
+    "cat('0 misspelled words\n')",
+    sep = "; "
+  )
+  list(run_step("spelling::spell_check_package()", "Rscript",
+                c("-e", shQuote(code))))
+}
+
 # The load-bearing stage, and the one no `devtools::test()` can stand in for.
 # `R CMD check` must run on a BUILT TARBALL: building is what reads `Collate:`,
 # and checking the tarball is what runs the tests against an INSTALLED package,
@@ -400,11 +421,24 @@ TESTTHAT_WARNINGS <- "^(=|\u2550){2} Warnings"
 # this step reports PASS and drops it. Hence the `watch` -- the summary reporter
 # emits a warnings section only when there are warnings, so this prints nothing
 # on a clean run and the whole section when there is one.
+#
+# It EXCLUDES the two third-party advisory audits, test-security.R (OSS Index)
+# and test-osv.R (OSV) (SEOR-fftbjnpl). test_local() sets NOT_CRAN=true, so
+# their skip_on_cran() does not fire here, and ~/.Renviron puts the OSS Index
+# credentials in scope -- so both ran live on every push, and a new upstream
+# advisory blocked an unrelated push on 2026-09-09. An advisory is a fact about
+# the world, not about the tree being pushed. `filter` matches the context name
+# (the file name minus `test-` and `.R`); testthat passes `invert` through to
+# the same file filter. Nothing runs the audits automatically after this; run
+# them deliberately with testthat::test_local(filter = "^(security|osv)$").
 stage_locale <- function() {
   cat("[locale] test suite under LC_ALL=C\n")
   code <- paste(
     "stopifnot(identical(Sys.getlocale('LC_CTYPE'), 'C'))",
-    "testthat::test_local(reporter = 'summary', stop_on_failure = TRUE)",
+    paste(
+      "testthat::test_local(reporter = 'summary', stop_on_failure = TRUE,",
+      "filter = '^(security|osv)$', invert = TRUE)"
+    ),
     sep = "; "
   )
   list(run_step("testthat under LC_ALL=C", "Rscript",
@@ -533,7 +567,7 @@ if (opt_self_test) {
 root <- repo_root()
 plan <- c("gates", "selftests")
 if (!opt_gates) {
-  plan <- c(plan, "lint")
+  plan <- c(plan, "lint", "spelling")
 }
 if (!opt_gates && !opt_fast) {
   plan <- c(plan, "check", "locale")
@@ -562,6 +596,7 @@ for (st in plan) {
     gates = stage_gates(root),
     selftests = stage_self_tests(root),
     lint = stage_lint(),
+    spelling = stage_spelling(),
     check = stage_check(root),
     locale = stage_locale(),
     release = stage_release()

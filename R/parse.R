@@ -80,9 +80,11 @@
 #'     \item{"strip": Remove a trailing index.* or default.* segment
 #'     (case-insensitive).}
 #'   }
-#' @param path_normalization How to normalize path structure. Defaults to
-#' "none". rurl owns dot-segment resolution: the path is read from the input
-#' verbatim (never from a pre-normalized path), so \code{"none"} preserves
+#' @param path_normalization,path_normalisation How to normalize path
+#' structure. Defaults to "none". \code{path_normalisation} is the British
+#' spelling, accepted as an alias: pass one or the other, not both. rurl owns
+#' dot-segment resolution: the path is read from the input verbatim (never
+#' from a pre-normalized path), so \code{"none"} preserves
 #' \code{.} / \code{..} segments (\code{/a/../b} stays \code{/a/../b}) and only
 #' the settings below change them. Resolution follows RFC 3986 section 5.2.4 and
 #' acts on \emph{literal} \code{.}/\code{..} segments only — a percent-encoded
@@ -369,8 +371,9 @@
 #'     \item `user`: The user name for authentication; never percent-decoded.
 #'     Under `url_standard = "whatwg"` it carries the standard's percent-encoded
 #'     spelling (the userinfo percent-encode set is applied, so
-#'     "http://a^b@host/" reports "a%5Eb"); under `url_standard = "rfc3986"` or
-#'     no selector it is the raw source spelling, exactly as written in the URL.
+#'     `"http://a^b@host/"` reports `"a%5Eb"`); under
+#'     `url_standard = "rfc3986"` or no selector it is the raw source spelling,
+#'     exactly as written in the URL.
 #'     Empty is reported as NA.
 #'     \item `password`: The password for authentication, with the same
 #'     encoding contract as `user` (so a ":" inside a WHATWG password is
@@ -389,7 +392,7 @@
 #'     one `domain_ascii` — so consumers can build an encoding-independent key
 #'     from a single parse. NA under the same conditions as `domain`.
 #'     \item `tld_ascii`, `tld_unicode`: The public suffix (TLD) in both
-#'     canonical spellings, the `tld` analogue of `domain_ascii`/
+#'     canonical spellings, the `tld` analog of `domain_ascii`/
 #'     `domain_unicode`. NA under the same conditions as `tld`.
 #'     \item `is_ip_host`: Logical, TRUE if the host is an IP address.
 #'     \item `clean_url`: A normalized canonical key reconstructed from
@@ -538,7 +541,16 @@ safe_parse_url <- function(url,
                            url_standard = NULL,
                            engine = NULL,
                            profile = NULL,
-                           credential_handling = c("strip", "reject")) {
+                           credential_handling = c("strip", "reject"),
+                           path_normalisation = NULL) {
+  # `path_normalisation` is the British-spelling alias (SEOR-oytkybis). The
+  # assignment clears missing(path_normalization), so the alias counts as
+  # explicitly supplied below, exactly like the US spelling.
+  if (!is.null(path_normalisation)) {
+    path_normalization <- .resolve_path_normalisation_alias(
+      !missing(path_normalization), path_normalisation
+    )
+  }
   # Enforce scalar input to keep behavior explicit and predictable
   if (length(url) != 1) {
     stop(
@@ -708,7 +720,16 @@ safe_parse_urls <- function(url,
                             url_standard = NULL,
                             engine = NULL,
                             profile = NULL,
-                            credential_handling = c("strip", "reject")) {
+                            credential_handling = c("strip", "reject"),
+                            path_normalisation = NULL) {
+  # `path_normalisation` is the British-spelling alias (SEOR-oytkybis). The
+  # assignment clears missing(path_normalization), so the alias counts as
+  # explicitly supplied below, exactly like the US spelling.
+  if (!is.null(path_normalisation)) {
+    path_normalization <- .resolve_path_normalisation_alias(
+      !missing(path_normalization), path_normalisation
+    )
+  }
   # url_standard (RURL-eqzkkohm): validate + conflict-check the governed knobs
   # the caller explicitly supplied (see safe_parse_url() for the rationale).
   url_standard <- .validate_url_standard(url_standard)
@@ -1410,6 +1431,26 @@ safe_parse_urls <- function(url,
   engine
 }
 
+# Resolve the British-spelling alias `path_normalisation` (SEOR-oytkybis).
+# Every public function that takes `path_normalization` also takes
+# `path_normalisation = NULL` as its LAST formal, so no positional call shifts,
+# and calls this only when the alias is non-NULL, assigning the result to its
+# own `path_normalization`. `path_normalization_supplied` is the caller's
+# !missing(path_normalization) (or, across a `...` seam, whether the US name is
+# among the dots): the US formal defaults to a non-NULL choice vector, so only
+# the caller can tell whether it was passed. Supplying both spellings errors.
+.resolve_path_normalisation_alias <- function(path_normalization_supplied,
+                                              path_normalisation) {
+  if (isTRUE(path_normalization_supplied)) {
+    stop(
+      "Supply `path_normalization` or its alias `path_normalisation`, ",
+      "not both.",
+      call. = FALSE
+    )
+  }
+  path_normalisation
+}
+
 # Collect the governed knobs a caller EXPLICITLY supplied: each argument is
 # either the resolved value or NULL (not supplied). Drops the NULLs, leaving a
 # named list keyed by knob name.
@@ -1471,6 +1512,12 @@ safe_parse_urls <- function(url,
 # from the captured dots list, validates url_standard, and applies the same
 # conflict rule.
 .check_url_standard_conflicts_dots <- function(dots) {
+  # The British alias reaches the governed check under its US name.
+  if (!is.null(dots$path_normalisation)) {
+    dots$path_normalization <- .resolve_path_normalisation_alias(
+      "path_normalization" %in% names(dots), dots$path_normalisation
+    )
+  }
   url_standard <- .validate_url_standard(dots$url_standard)
   if (is.null(url_standard)) {
     return(invisible(NULL))

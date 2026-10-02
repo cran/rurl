@@ -359,7 +359,7 @@
 # repair (RURL-zqhgezuq) compensated for a parse seam that rejected a second
 # "@" -- the C-03 disposition in design/work/url-v3/contracts/
 # validation-intervention-contract.md owns that history. Splitting at the LAST
-# "@" is what the WHATWG authority state does, so the behaviour moved into the
+# "@" is what the WHATWG authority state does, so the behavior moved into the
 # parser as `.parse_web_url_one(last_at_userinfo = TRUE)`. What is left
 # here changes the SPELLING of a userinfo the parser would otherwise refuse, and
 # the spelling it writes is the one WHATWG stores -- a normalization the parser
@@ -440,7 +440,7 @@
 # grammar directly, as `host_ipv4` (R/parse-web.R). Its companion
 # `.parse_whatwg_ipv4_host()` / `.parse_whatwg_ipv4_number()` went with it,
 # reconciled into `.web_ipv4_normalize(host, ipv4)` -- one function with a flag,
-# so the three forms the two flavours disagree about are stated once instead of
+# so the three forms the two flavors disagree about are stated once instead of
 # having to be rediscovered by diffing two near-identical normalizers.
 #
 # `.host_ends_in_number_vec()` STAYS: it is also the WHATWG host model's trigger
@@ -1053,7 +1053,7 @@
   # WHATWG userinfo charset acceptance (RURL-micalqvh): rewrite the SPACE / C0 /
   # DEL bytes the parser refuses into the percent-encoded spelling WHATWG
   # stores. The repeated-"@" recovery that used to run here is now parser
-  # behaviour (RURL-ezhzpkhg deletion 3).
+  # behavior (RURL-ezhzpkhg deletion 3).
   at <- .encode_userinfo_charset_vec(url_to_parse, url_standard)
   url_to_parse <- at$url
 
@@ -1743,7 +1743,10 @@
     #       leaves intact (or, for DEL, silently drops);
     #   (A) a NON-ASCII host fails UTS-46 domain-to-ASCII (U+FFFD/U+FFFF
     #       noncharacters, a soft-hyphen-only label collapsing to empty) -- one
-    #       vectorized punycoder::host_normalize() over just the non-ASCII rows.
+    #       vectorized punycoder::host_normalize() over just the non-ASCII rows;
+    #       or its domain-to-ASCII RESULT holds a forbidden code point, which is
+    #       where WHATWG tests for one: U+FF03, U+FF0F, U+FF1F, U+FF1A, U+FF05,
+    #       U+00A0 and U+3000 map to # / ? : % and space (RURL-crsrkcoh).
     reg <- !is_ip & !is.na(host) & host != ""
     if (any(reg)) {
       bad_cp <- reg &
@@ -1756,7 +1759,10 @@
       nonascii <- reg & !bad_cp &
         stringi::stri_detect_regex(host, "[^\\u0001-\\u007f]")
       nonascii[is.na(nonascii)] <- FALSE
-      fatal <- fatal | (nonascii & is.na(mapped))
+      bad_mapped <- nonascii & !is.na(mapped) &
+        stringi::stri_detect_regex(mapped, .WHATWG_FORBIDDEN_HOST_CP)
+      bad_mapped[is.na(bad_mapped)] <- FALSE
+      fatal <- fatal | (nonascii & is.na(mapped)) | bad_mapped
     }
 
     # WHATWG IPv6 serializer (RURL-thjmzaam): bracketed IPv6 literals serialize

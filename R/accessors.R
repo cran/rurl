@@ -351,7 +351,16 @@ get_clean_url <- function(url,
                           url_standard = NULL,
                           engine = NULL,
                           profile = NULL,
-                          credential_handling = c("strip", "reject")) {
+                          credential_handling = c("strip", "reject"),
+                          path_normalisation = NULL) {
+  # `path_normalisation` is the British-spelling alias (SEOR-oytkybis). The
+  # assignment clears missing(path_normalization), so the alias counts as
+  # explicitly supplied below, exactly like the US spelling.
+  if (!is.null(path_normalisation)) {
+    path_normalization <- .resolve_path_normalisation_alias(
+      !missing(path_normalization), path_normalisation
+    )
+  }
   # Capture query_handling's supplied-ness BEFORE match.arg() reassigns it (an
   # assignment to a formal clears its missing() status), so profile resolution
   # can tell an explicit query_handling from the default (seo governs it).
@@ -669,8 +678,17 @@ get_path <- function(
   path_encoding = c("keep", "encode", "decode"),
   scheme_policy = c("infer", "require"),
   scheme_acceptance = c("web", "general"),
-  url_standard = NULL
+  url_standard = NULL,
+  path_normalisation = NULL
 ) {
+  # `path_normalisation` is the British-spelling alias (SEOR-oytkybis). The
+  # assignment clears missing(path_normalization), so the alias counts as
+  # explicitly supplied below, exactly like the US spelling.
+  if (!is.null(path_normalisation)) {
+    path_normalization <- .resolve_path_normalisation_alias(
+      !missing(path_normalization), path_normalisation
+    )
+  }
   # url_standard validation + conflict check must read missing() BEFORE the
   # match.arg() reassignments below (assignment can make missing() FALSE).
   url_standard <- .validate_url_standard(url_standard)
@@ -1372,6 +1390,13 @@ get_host_type <- function(url, url_standard,
 #'   conforms to its scheme's specification or to WHATWG/RFC 3986. Full
 #'   per-standard conformance validation is out of scope (ADR 0012 D5).
 #'
+#'   One token is the exception, and consumers may rely on its absence:
+#'   \code{domain-invalid-ace-label} fires on \emph{every} parsed host that
+#'   meets its predicate (see its entry below), under both \code{"rfc3986"}
+#'   and \code{"whatwg"}. Its absence means each \code{xn--} label of the host
+#'   is, on its own, a genuine A-label. It says nothing about the host's other
+#'   labels or about the DNS rules the other \code{domain-*} tokens report.
+#'
 #'   Two WHATWG-generic facts gate on the \emph{interpreting standard}, not the
 #'   acceptance axis, so they are reported whenever \code{url_standard =
 #'   "whatwg"} --- including the default \code{"web"} acceptance path (they are
@@ -1455,6 +1480,27 @@ get_host_type <- function(url, url_standard,
 #'       3--4 of a non-\code{xn--} label).
 #'     \item \code{domain-std3-violation} --- a label carries a code point
 #'       outside the STD3 LDH set.
+#'     \item \code{domain-invalid-ace-label} --- a label beginning
+#'       \code{xn--} (in any ASCII case) is not a genuine A-label: its Punycode
+#'       decode fails (including an empty or all-ASCII result), or the decoded
+#'       label fails the UTS #46 Validity Criteria (section 4.1) under the
+#'       WHATWG URL Standard's non-strict flags (\code{CheckHyphens},
+#'       \code{UseSTD3ASCIIRules} and \code{VerifyDnsLength} false;
+#'       \code{CheckBidi} and \code{CheckJoiners} true). Each such label is
+#'       judged on its own, so criterion 9 applies as though the label were
+#'       the whole name: a label that is valid alone but fails the Bidi rule
+#'       only because another label makes the name a Bidi domain name does not
+#'       fire it. The host still
+#'       parses: under \code{"whatwg"} the domain parser keeps an ASCII host
+#'       whose ToASCII fails, lowercased. Unlike the rest of this vocabulary,
+#'       this token is \strong{complete}: it fires on every host meeting the
+#'       predicate, so its absence can be relied on. It can co-fire with
+#'       \code{domain-hyphen-violation} (a decoded label beginning
+#'       \code{xn--} breaks both the strict and the non-strict hyphen rule),
+#'       and with \code{domain-empty-label} when another label is empty. Hyphen,
+#'       STD3 and length facts alone never fire it. Where it fires, those three
+#'       facts can be missing: they are computed only for a host whose relaxed
+#'       UTS #46 processing succeeds as a whole.
 #'     \item \code{host-charset-shimmed} --- the host carries one of the 15
 #'       code points WHATWG keeps but the historical parser rejected,
 #'       accepted by the shim (ADR 0009: \code{! $ & ( ) * + , ; =}, plus the
@@ -1664,7 +1710,7 @@ get_scheme_class <- function(url, url_standard,
 #'
 #' Parameter names are grouped \emph{faithfully} (case-sensitively and by their
 #' decoded spelling), so `utm_source` and `UTM_SOURCE` are reported as separate
-#' rows. The `would_drop` preview, by contrast, honours `params_case_sensitive`:
+#' rows. The `would_drop` preview, by contrast, honors `params_case_sensitive`:
 #' with the default `params_case_sensitive = FALSE`, `UTM_SOURCE` matches the
 #' built-in denylist and shows `would_drop = TRUE`; set it to `TRUE` and the
 #' upper-case spelling no longer matches. The raw `query` field is only read,
@@ -1713,7 +1759,7 @@ query_param_summary <- function(urls,
   # Read the faithful raw query for every URL in one engine pass, then decompose
   # each into decoded ordered pairs. would_drop is a FILTER-mode preview: the
   # same ._select_params() the cleaner uses, so denylist u params_drop minus
-  # params_keep, plus empty-dropping, all honouring params_case_sensitive.
+  # params_keep, plus empty-dropping, all honoring params_case_sensitive.
   raw <- .extract_from_urls(urls, "query", protocol_handling = "keep")
 
   per_url <- lapply(seq_along(raw), function(i) {
